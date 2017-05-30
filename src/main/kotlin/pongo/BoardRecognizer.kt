@@ -10,6 +10,9 @@ import org.opencv.core.Scalar
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.CvType
 
+data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
+    fun area(): Double  = Imgproc.contourArea(matOfPoint)
+}
 
 class BoardRecognizer {
     companion object {
@@ -26,7 +29,6 @@ class BoardRecognizer {
         File(output.parent).mkdirs()
         println(output.absolutePath)
 
-        
         val processed = process(original)
 
         Highgui.imwrite(output.absolutePath, processed)
@@ -34,72 +36,62 @@ class BoardRecognizer {
     }
 
     private fun process(original: Mat): Mat {
-        var gray = original.clone()
+        // Clone
+        val gray = original.clone()
 
+        // Grayscale
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_RGB2GRAY)
         gray.convertTo(gray, CvType.CV_8U)
-        println("channels: ${gray.channels()}")
-        val grayComparer = compare(gray)
+
+        // Equalize histogram
         Imgproc.equalizeHist(gray, gray)
 
+        // Contrast
         contrast(gray, 0.1)
 
-        val contrastComparer = compare(gray)
-
+        // Blur
         Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.5)
 
-//        return contrastComparer(gray)
-        val blurComparer = compare(gray)
+        // Threshhold
         Imgproc.adaptiveThreshold(
                 gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 9, 4.0)
-//        Imgproc.threshold(gray, gray, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
 
-        val threshholdComparer = compare(gray)
-//        return blurComparer(gray)
-
+        // Dilation
         val dilationSize = 3.0
         val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(dilationSize, dilationSize))
-
         Imgproc.dilate(gray, gray, dilateKernel)
-//        return threshholdComparer(gray)
 
-//        Core.bitwise_not(gray, gray)
-
-        val dilateComparer = compare(gray)
-
+        // Contours
         val contours = ArrayList<MatOfPoint>()
         val hierarchy = Mat()
-
         Imgproc.findContours(gray, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE)
-//        return comparer(gray)
-//        return dilateComparer(gray)
 
+        // Convert to color for drawing colored polygons
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_GRAY2RGB)
-        val contourComparer = compare(gray)
-        val averageArea = contours.map { Imgproc.contourArea(it) }.average()
 
-        data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
-            fun area(): Double {
-                return Imgproc.contourArea(matOfPoint)
-            }
-        }
+        // Get the biggest two 4-sided polygons
+        val biggestContours = contours
+                // Get approximated polygons
+                .mapIndexed { index, matOfPoint ->
+                    // Convert to floats
+                    val contour2f = MatOfPoint2f()
+                    contours.get(index).convertTo(contour2f, CvType.CV_32F)
 
-        val biggestContours = contours.mapIndexed { index, matOfPoint ->
+                    // Approximate polygon
+                    val epsilon = Imgproc.arcLength(contour2f, true) * 0.1
+                    val poly2f = MatOfPoint2f()
+                    Imgproc.approxPolyDP(contour2f, poly2f, epsilon, true)
 
-            val contour2f = MatOfPoint2f()
-            contours.get(index).convertTo(contour2f, CvType.CV_32F)
+                    // Convert to ints
+                    val poly = MatOfPoint()
+                    poly2f.convertTo(poly, CvType.CV_32S)
 
-            val poly2f = MatOfPoint2f()
-            val epsilon = Imgproc.arcLength(contour2f, true) * 0.1
-
-            Imgproc.approxPolyDP(contour2f, poly2f,
-                    epsilon, true)
-
-            val poly = MatOfPoint()
-            poly2f.convertTo(poly, CvType.CV_32S)
-            Contour(index, poly)
-        }
+                    // Return
+                    Contour(index, poly)
+                }
+                // Keep only 4-sided polys
                 .filter { (_, matOfPoint) -> matOfPoint.total() == 4L }
+                // Draw all polys in blue
                 .map {
                     contours.set(it.index, it.matOfPoint)
                     Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 0.0, 0.0), 1)
@@ -108,44 +100,59 @@ class BoardRecognizer {
                 .sortedBy { it.area() }
                 .takeLast(2)
 
-        val biggest = if (biggestContours.size == 2
-                && biggestContours[0].area() / biggestContours[1].area() > 0.9) {
-            biggestContours[0]
-        } else {
-            biggestContours[1]
-        }
+        // Pick the grid out of two polys that might be either the board outline, or the grid outline
+        // Get the smaller of the largest two polys if it's at least 90% of the area of the largest one,
+        // otherwise get the largest poly
+        val gridPoly = if (biggestContours.size == 2 && biggestContours[0].area() / biggestContours[1].area() > 0.9)
+            biggestContours[0] else biggestContours[1]
 
-        Imgproc.drawContours(gray, contours, biggest.index, Scalar(0.0, 0.0, 255.0), 2)
+        // Draw the outline of the grid
+        Imgproc.drawContours(gray, contours, gridPoly.index, Scalar(0.0, 0.0, 255.0), 2)
 
         return gray
     }
 
+    /**
+     * Increase the contrast of mat. Assumes the Mat to be in CV_8S
+     */
     private fun contrast(mat: Mat, strength: Double) {
+        /**
+         * Return the y-value on position x on the Logistic function sigmoid in the 0..255-range
+         */
         fun sigmoid(x: Int): Int {
             return (256.0 / (1.0 + Math.pow(Math.E, (-1.0 * strength) * (x - 128)))).toInt()
         }
 
-        fun t(x: Int): Int {
+        /**
+         * Convert the signed 8-bit int x to unsigned
+         */
+        fun cv8STo8U(x: Int): Int {
             return (x + 256) % 256
         }
-        fun ti(x: Int): Int {
+
+        /**
+         * Convert the unsigned 8-bit int x to signed
+         * TODO: Might not work :)
+         */
+        fun cv8UTo8S(x: Int): Int {
             return (x - 128) % 256
         }
 
+        // Put all bytes of mat into buff
         val buff = ByteArray(mat.total().toInt())
         mat.get(0, 0, buff)
 
-        buff.forEachIndexed { index, byte -> buff.set(index, (sigmoid(t(buff.get(index).toInt()))).toByte()) }
+        // Apply the sigmoid function to each byte in buff
+        buff.forEachIndexed { index, byte -> buff.set(index, (sigmoid(cv8STo8U(buff.get(index).toInt()))).toByte()) }
 
-        for (x in 0..255) {
-            val sig = sigmoid(x)
-            buff.set(mat.cols() * sig + x, sig.toByte())
-        }
-
+        // Put all bytes back into mat
         mat.put(0, 0, buff)
     }
 
 
+    /**
+     * Return a function that returns a mat where one half is the original, and the other half the supplied mat
+     */
     private fun compare(original: Mat): (mat: Mat) -> Mat {
         val clone = original.clone()
         return { sample: Mat ->
