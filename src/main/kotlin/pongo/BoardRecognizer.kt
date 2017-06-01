@@ -9,6 +9,8 @@ import org.opencv.core.Mat
 import org.opencv.core.Scalar
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.CvType
+import org.opencv.utils.Converters
+
 
 data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
     fun area(): Double  = Imgproc.contourArea(matOfPoint)
@@ -109,7 +111,66 @@ class BoardRecognizer {
         // Draw the outline of the grid
         Imgproc.drawContours(gray, contours, gridPoly.index, Scalar(0.0, 0.0, 255.0), 2)
 
+        // Unwarp perspective
+        // Get mats representing the current perspective rectangle, and the goal square
+        val srcPoints = sortedRectangle(gridPoly.matOfPoint.toList())
+        val dstPoints = maxSquare(boundingRect(srcPoints))
+        val srcMat = Converters.vector_Point2f_to_Mat(srcPoints)
+        val dstMat = Converters.vector_Point2f_to_Mat(dstPoints)
+
+        // Warp between src perspective rectangle and dst square
+        val perspectiveTransform = Imgproc.getPerspectiveTransform(srcMat, dstMat)
+        Imgproc.warpPerspective(gray, gray, perspectiveTransform, Size(dstPoints[3].x, dstPoints[3].x))
+
         return gray
+    }
+
+    /**
+     * Get the bounding right-angled rectangle (starting at origin)
+     * of a non-right-angled rectangle
+     */
+    private fun boundingRect(rect: List<Point>): List<Point> {
+        val maxWidth = Math.max(distance(rect[0], rect[1]), distance(rect[2], rect[3]))
+        val maxHeight = Math.max(distance(rect[0], rect[2]), distance(rect[1], rect[3]))
+
+        return listOf(
+                Point(0.0, 0.0),
+                Point(maxWidth, 0.0),
+                Point(0.0, maxHeight),
+                Point(maxWidth, maxHeight))
+    }
+
+    /**
+     * Get the bounding square of a right-angled rectangle starting at origin
+     */
+    private fun maxSquare(rect: List<Point>): List<Point> {
+        val max = Math.max(rect[3].x, rect[3].y)
+        return listOf(
+                Point(0.0, 0.0),
+                Point(max, 0.0),
+                Point(0.0, max),
+                Point(max, max))
+    }
+
+    /**
+     * Get the distance between two points
+     */
+    private fun distance(first: Point, second: Point): Double {
+        return Math.hypot(first.x - second.x, first.y - second.y)
+    }
+
+    /**
+     * Sort the points of a rectangle in the order of:
+     * top left -> top right -> bottom left -> bottom -> right
+     */
+    private fun sortedRectangle(rectPoints: MutableList<Point>): List<Point> {
+        val summedPoints = rectPoints.sortedBy { point -> point.x + point.y }
+        val topLeft = summedPoints.first()
+        val bottomRight = summedPoints.last()
+        val diffedPoints = rectPoints.sortedBy { point -> point.x - point.y }
+        val topRight = diffedPoints.first()
+        val bottomLeft = diffedPoints.last()
+        return listOf(topLeft, topRight, bottomLeft, bottomRight)
     }
 
     /**
