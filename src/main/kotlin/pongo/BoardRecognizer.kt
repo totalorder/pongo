@@ -1,4 +1,5 @@
 package pongo
+import com.sun.javafx.geom.Matrix3f
 import org.opencv.core.*
 import java.io.*
 import org.opencv.highgui.Highgui
@@ -48,6 +49,8 @@ class BoardRecognizer {
         // Equalize histogram
         Imgproc.equalizeHist(gray, gray)
 
+        val preprocessed = gray.clone()
+
         // Contrast
         contrast(gray, 0.1)
 
@@ -62,6 +65,7 @@ class BoardRecognizer {
         val dilationSize = 3.0
         val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(dilationSize, dilationSize))
         Imgproc.dilate(gray, gray, dilateKernel)
+
 
         // Contours
         val contours = ArrayList<MatOfPoint>()
@@ -113,16 +117,55 @@ class BoardRecognizer {
 
         // Unwarp perspective
         // Get mats representing the current perspective rectangle, and the goal square
-        val srcPoints = sortedRectangle(gridPoly.matOfPoint.toList())
-        val dstPoints = maxSquare(boundingRect(srcPoints))
-        val srcMat = Converters.vector_Point2f_to_Mat(srcPoints)
-        val dstMat = Converters.vector_Point2f_to_Mat(dstPoints)
+        val originalRect = sortedRectangle(gridPoly.matOfPoint.toList())
+        val originalMat = Converters.vector_Point2f_to_Mat(originalRect)
+        val originalDstSquare = maxSquare(boundingRect(originalRect))
+        val originalDstMat = Converters.vector_Point2f_to_Mat(originalDstSquare)
 
-        // Warp between src perspective rectangle and dst square
-        val perspectiveTransform = Imgproc.getPerspectiveTransform(srcMat, dstMat)
-        Imgproc.warpPerspective(gray, gray, perspectiveTransform, Size(dstPoints[3].x, dstPoints[3].x))
+        // Blowing up the rect of the grid to also cover the half of stones outside the grid works poorly
+        if (false) {
+            val blownUpRect = blowUpRect(originalRect)
+            val blownUpMat = Converters.vector_Point2f_to_Mat(blownUpRect)
+            val blownUpDstSquare = maxSquare(boundingRect(blownUpRect))
+            val blownUpDstMat = Converters.vector_Point2f_to_Mat(blownUpDstSquare)
 
-        return gray
+            blownUpRect.mapIndexed { index, point ->
+                Core.line(gray, point, blownUpRect[(index + 1) % blownUpRect.size], Scalar(0.0, 255.0, 0.0))
+            }
+            return gray
+        } else {
+            // Warp between src perspective rectangle and dst square
+            val perspectiveTransform = Imgproc.getPerspectiveTransform(originalMat, originalDstMat)
+            Imgproc.warpPerspective(preprocessed, preprocessed, perspectiveTransform, Size(originalDstSquare[3].x, originalDstSquare[3].x))
+        }
+
+
+        // Draw the spaces which might include stones
+        val gridSize = preprocessed.width() / 18.0
+        for (x in 0..19) {
+            for (y in  0..19) {
+                val center = Point(x * gridSize, y * gridSize)
+                Core.circle(preprocessed, center, gridSize.toInt(), Scalar(255.0, 0.0, 0.0))
+            }
+        }
+
+        return preprocessed
+    }
+
+
+    /**
+     *
+     */
+    private fun blowUpRect(rect: List<Point>, factor: Int = 19): List<Point> {
+        // TODO: Blow up from the center of rectangle, instead of strictly diagonally
+        val topWidthSpacing = (distance(rect[0], rect[1]) / factor) / 2
+        val bottomWidthSpacing = (distance(rect[2], rect[3]) / factor) / 2
+
+        return listOf(
+                Point(rect[0].x - topWidthSpacing, rect[0].y - topWidthSpacing),
+                Point(rect[1].x + topWidthSpacing, rect[1].y - topWidthSpacing),
+                Point(rect[2].x - bottomWidthSpacing, rect[2].y + topWidthSpacing),
+                Point(rect[3].x + bottomWidthSpacing, rect[3].y + topWidthSpacing))
     }
 
     /**
@@ -168,8 +211,8 @@ class BoardRecognizer {
         val topLeft = summedPoints.first()
         val bottomRight = summedPoints.last()
         val diffedPoints = rectPoints.sortedBy { point -> point.x - point.y }
-        val topRight = diffedPoints.first()
-        val bottomLeft = diffedPoints.last()
+        val topRight = diffedPoints.last()
+        val bottomLeft = diffedPoints.first()
         return listOf(topLeft, topRight, bottomLeft, bottomRight)
     }
 
