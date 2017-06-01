@@ -11,6 +11,12 @@ import org.opencv.core.Scalar
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.CvType
 import org.opencv.utils.Converters
+import org.opencv.core.MatOfFloat
+import org.opencv.core.MatOfInt
+import org.opencv.core.CvType.channels
+import java.util.Arrays
+
+
 
 
 data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
@@ -61,11 +67,11 @@ class BoardRecognizer {
         Imgproc.adaptiveThreshold(
                 gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 9, 4.0)
 
+
         // Dilation
         val dilationSize = 3.0
         val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(dilationSize, dilationSize))
         Imgproc.dilate(gray, gray, dilateKernel)
-
 
         // Contours
         val contours = ArrayList<MatOfPoint>()
@@ -111,7 +117,6 @@ class BoardRecognizer {
         // otherwise get the largest poly
         val gridPoly = if (biggestContours.size == 2 && biggestContours[0].area() / biggestContours[1].area() > 0.9)
             biggestContours[0] else biggestContours[1]
-
         // Draw the outline of the grid
         Imgproc.drawContours(gray, contours, gridPoly.index, Scalar(0.0, 0.0, 255.0), 2)
 
@@ -122,50 +127,48 @@ class BoardRecognizer {
         val originalDstSquare = maxSquare(boundingRect(originalRect))
         val originalDstMat = Converters.vector_Point2f_to_Mat(originalDstSquare)
 
-        // Blowing up the rect of the grid to also cover the half of stones outside the grid works poorly
-        if (false) {
-            val blownUpRect = blowUpRect(originalRect)
-            val blownUpMat = Converters.vector_Point2f_to_Mat(blownUpRect)
-            val blownUpDstSquare = maxSquare(boundingRect(blownUpRect))
-            val blownUpDstMat = Converters.vector_Point2f_to_Mat(blownUpDstSquare)
 
-            blownUpRect.mapIndexed { index, point ->
-                Core.line(gray, point, blownUpRect[(index + 1) % blownUpRect.size], Scalar(0.0, 255.0, 0.0))
-            }
-            return gray
-        } else {
-            // Warp between src perspective rectangle and dst square
-            val perspectiveTransform = Imgproc.getPerspectiveTransform(originalMat, originalDstMat)
-            Imgproc.warpPerspective(preprocessed, preprocessed, perspectiveTransform, Size(originalDstSquare[3].x, originalDstSquare[3].x))
-        }
-
+        // Warp between src perspective rectangle and dst square
+        val perspectiveTransform = Imgproc.getPerspectiveTransform(originalMat, originalDstMat)
+        Imgproc.warpPerspective(preprocessed, preprocessed, perspectiveTransform, Size(originalDstSquare[3].x, originalDstSquare[3].x))
 
         // Draw the spaces which might include stones
         val gridSize = preprocessed.width() / 18.0
         for (x in 0..19) {
             for (y in  0..19) {
                 val center = Point(x * gridSize, y * gridSize)
-                Core.circle(preprocessed, center, gridSize.toInt(), Scalar(255.0, 0.0, 0.0))
+//                Core.circle(preprocessed, center, (gridSize * 0.9).toInt(), Scalar(255.0, 0.0, 0.0))
+
+                if (x > 8 && y > 9) {
+                    val interestDiameter = (gridSize * 0.9).toInt()
+
+                    val mask = Mat(preprocessed.size(), CvType.CV_8U, Scalar(0.0, 0.0, 0.0))
+                    Core.circle(mask, center, interestDiameter, Scalar(255.0, 255.0, 255.0), -1)
+
+                    val dst = Mat(preprocessed.size(), CvType.CV_8U, Scalar(127.0, 127.0, 127.0))
+                    preprocessed.copyTo(dst, mask)
+
+                    val hist = Mat()
+                    Imgproc.calcHist(Arrays.asList(dst), MatOfInt(0),
+                            Mat(), hist, MatOfInt(3), MatOfFloat(0.0f, 255.0f))
+
+                    val submat = dst.submat(Rect(x-interestDiameter, y-interestDiameter, interestDiameter*2, interestDiameter*2))
+
+                    println(dst.size())
+                    (0..2).map {
+                        println("${hist.get(it, 0)[0]}")
+                    }
+
+                    return dst
+                }
             }
         }
 
+
+
+
+
         return preprocessed
-    }
-
-
-    /**
-     *
-     */
-    private fun blowUpRect(rect: List<Point>, factor: Int = 19): List<Point> {
-        // TODO: Blow up from the center of rectangle, instead of strictly diagonally
-        val topWidthSpacing = (distance(rect[0], rect[1]) / factor) / 2
-        val bottomWidthSpacing = (distance(rect[2], rect[3]) / factor) / 2
-
-        return listOf(
-                Point(rect[0].x - topWidthSpacing, rect[0].y - topWidthSpacing),
-                Point(rect[1].x + topWidthSpacing, rect[1].y - topWidthSpacing),
-                Point(rect[2].x - bottomWidthSpacing, rect[2].y + topWidthSpacing),
-                Point(rect[3].x + bottomWidthSpacing, rect[3].y + topWidthSpacing))
     }
 
     /**
