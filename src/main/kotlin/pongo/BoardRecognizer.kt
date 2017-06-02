@@ -137,29 +137,49 @@ class BoardRecognizer {
         for (x in 0..19) {
             for (y in  0..19) {
                 val center = Point(x * gridSize, y * gridSize)
+                val topLeft = Point(x * gridSize - gridSize / 2, y * gridSize - gridSize / 2)
 //                Core.circle(preprocessed, center, (gridSize * 0.9).toInt(), Scalar(255.0, 0.0, 0.0))
 
-                if (x > 8 && y > 9) {
-                    val interestDiameter = (gridSize * 0.9).toInt()
+                if (x in 1..17 && y in 1..17) {
+                    val interestDiameter = gridSize * 0.9
 
                     val mask = Mat(preprocessed.size(), CvType.CV_8U, Scalar(0.0, 0.0, 0.0))
-                    Core.circle(mask, center, interestDiameter, Scalar(255.0, 255.0, 255.0), -1)
+                    Core.circle(mask, center, interestDiameter.toInt(), Scalar(255.0, 255.0, 255.0), -1)
 
                     val dst = Mat(preprocessed.size(), CvType.CV_8U, Scalar(127.0, 127.0, 127.0))
                     preprocessed.copyTo(dst, mask)
-
+                    val rectangle = Mat(dst,
+                            Rect(Math.round(center.x - interestDiameter).toInt(),
+                                    Math.round(center.y - interestDiameter).toInt(),
+                                    Math.round(interestDiameter * 2).toInt(),
+                                    Math.round(interestDiameter * 2).toInt()))
                     val hist = Mat()
-                    Imgproc.calcHist(Arrays.asList(dst), MatOfInt(0),
+                    Imgproc.calcHist(Arrays.asList(rectangle), MatOfInt(0),
                             Mat(), hist, MatOfInt(3), MatOfFloat(0.0f, 255.0f))
 
-                    val submat = dst.submat(Rect(x-interestDiameter, y-interestDiameter, interestDiameter*2, interestDiameter*2))
-
-                    println(dst.size())
-                    (0..2).map {
-                        println("${hist.get(it, 0)[0]}")
+                    println(rectangle.size())
+                    val values = (0..2).map {
+                        hist.get(it, 0)[0]
                     }
 
-                    return dst
+                    val max = values.max()!!
+                    values.mapIndexed { index, value ->
+                        val barHeight = gridSize * (value / max)
+                        val barX = (gridSize / 3 * index).toDouble()
+                        val width = gridSize / 12
+                        Core.rectangle(preprocessed,
+                                Point(topLeft.x + barX + width, topLeft.y + gridSize - barHeight),
+                                Point(topLeft.x + barX + width * 2, topLeft.y + gridSize.toDouble()),
+                                Scalar(255.0/2 * index, 255.0/2 * index, 255.0/2 * index),
+                                -1
+                        )
+                    }
+
+//                    return preprocessed
+//
+//                    return submat
+//
+//                    return dst
                 }
             }
         }
