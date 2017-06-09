@@ -38,7 +38,9 @@ class BoardRecognizer {
         File(output.parent).mkdirs()
         println(output.absolutePath)
 
+        val start = System.currentTimeMillis()
         val processed = process(original)
+        println("Processing time: ${System.currentTimeMillis() - start} ms")
 
         Highgui.imwrite(output.absolutePath, processed)
         Runtime.getRuntime().exec("eog ${output.absolutePath}")
@@ -66,7 +68,6 @@ class BoardRecognizer {
         // Threshhold
         Imgproc.adaptiveThreshold(
                 gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 9, 4.0)
-
 
         // Dilation
         val dilationSize = 3.0
@@ -135,85 +136,82 @@ class BoardRecognizer {
         // Draw the spaces which might include stones
         val gridSize = preprocessed.width() / 18.0
         // Convert to color for drawing colored polygons
-//        Imgproc.cvtColor(preprocessed, preprocessed, Imgproc.COLOR_GRAY2RGB)
-        val white = Mat(preprocessed.size(), CvType.CV_8U, Scalar(255.0, 255.0, 255.0))
+        Imgproc.cvtColor(preprocessed, preprocessed, Imgproc.COLOR_GRAY2RGB)
         for (x in 0..19) {
             for (y in  0..19) {
                 val center = Point(x * gridSize, y * gridSize)
                 val topLeft = Point(x * gridSize - gridSize / 2, y * gridSize - gridSize / 2)
-//                Core.circle(preprocessed, center, (gridSize * 0.9).toInt(), Scalar(255.0, 0.0, 0.0))
 
-                if (x in 1..17 && y in 1..17) {
+                if (x in 0..18 && y in 0..18) {
+                    val interestRadius = gridSize * 0.9 / 2
+
+                    // Fill area around interest circle with gray
                     val fullRectangle = Rect(
                             Point(topLeft.x, topLeft.y),
                             Point(topLeft.x + gridSize, topLeft.y + gridSize))
-                    // Draw histogram bounding rectangle
-//                    Core.rectangle(preprocessed, fullRectangle.tl(), fullRectangle.br(),
-//                            Scalar(255.0, 0.0, 0.0)
-//                    )
+                    val fullMask = Mat(preprocessed.size(), CvType.CV_8U, Scalar(255.0, 255.0, 255.0))
+                    Core.rectangle(fullMask, fullRectangle.tl(), fullRectangle.br(), Scalar(0.0, 0.0, 0.0), -1)
+                    Core.circle(fullMask, center, (interestRadius).toInt(), Scalar(255.0, 255.0, 255.0), -1)
+                    Core.bitwise_not(fullMask, fullMask)
+                    val grayMat = Mat(preprocessed.size(), CvType.CV_8U, Scalar(127.0, 127.0, 127.0))
+                    Imgproc.cvtColor(grayMat, grayMat, Imgproc.COLOR_GRAY2RGB) // TODO: Might exist a better way
+                    grayMat.copyTo(preprocessed, fullMask)
 
-                    val interestRadius = gridSize * 0.9 / 2
-
-                    val mask = Mat(preprocessed.size(), CvType.CV_8U, Scalar(0.0, 0.0, 0.0))
-                    Core.circle(mask, center, interestRadius.toInt(), Scalar(255.0, 255.0, 255.0), -1)
-
-                    val dst = Mat(preprocessed.size(), CvType.CV_8U, Scalar(127.0, 127.0, 127.0))
-                    preprocessed.copyTo(dst, mask)
+                    // Create a material over the interest area
                     val interestRectangle = Rect(
-                            Math.round(center.x - interestRadius).toInt(),
-                            Math.round(center.y - interestRadius).toInt(),
-                            Math.round(interestRadius * 2).toInt(),
-                            Math.round(interestRadius * 2).toInt())
-                    val rectangleMat = Mat(dst, interestRectangle)
-                    val hist = Mat()
-                    Imgproc.calcHist(Arrays.asList(rectangleMat), MatOfInt(0),
-                            Mat(), hist, MatOfInt(3), MatOfFloat(0.0f, 255.0f))
+                            Point(Math.round(Math.max(center.x - interestRadius, 0.0)).toDouble(),
+                                    Math.round(Math.max(center.y - interestRadius, 0.0)).toDouble()),
+                            Point(Math.round(Math.min(center.x + interestRadius, preprocessed.width().toDouble())).toDouble(),
+                                    Math.round(Math.min(center.y + interestRadius, preprocessed.height().toDouble())).toDouble()))
+                    val interestMat = Mat(preprocessed, interestRectangle)
 
-                    val mask2 = Mat(preprocessed.size(), CvType.CV_8U, Scalar(255.0, 255.0, 255.0))
-                    Core.rectangle(mask2, fullRectangle.tl(), fullRectangle.br(), Scalar(0.0, 0.0, 0.0), -1)
-                    Core.circle(mask2, center, (interestRadius).toInt(), Scalar(255.0, 255.0, 255.0), -1)
-                    val dst2 = Mat(preprocessed.size(), CvType.CV_8U, Scalar(127.0, 127.0, 127.0))
-                    Core.bitwise_not(mask2, mask2)
-                    dst2.copyTo(preprocessed, mask2)
-//                    println(rectangle.size())
-                    val values = (0..2).map {
+                    // Calculate histogram
+                    val hist = Mat()
+                    val fullNumberOfBins = 23
+                    Imgproc.calcHist(Arrays.asList(interestMat), MatOfInt(0),
+                            Mat(), hist, MatOfInt(fullNumberOfBins), MatOfFloat(0.0f, 255.0f))
+                    val histogramBins = (0 until fullNumberOfBins)
+                            .filterNot { it == fullNumberOfBins / 2 } // Remove center bin because of grayness
+                            .map {
                         hist.get(it, 0)[0]
                     }
+                    val numberOfBins = histogramBins.size
 
-                    val max = values.max()!!
-                    values.mapIndexed { index, value ->
-                        if (index != 1) {
-                            val barHeight = gridSize * (value / max)
-                            val barX = (gridSize / 3 * index)
-                            val width = gridSize / 12
-                            // Print debug
-                            println("hist value:" + value / max)
-                            if(index >= 2) {
-                                println("---")
-                            }
-                            Core.rectangle(preprocessed,
-                                    Point(topLeft.x + barX + width, topLeft.y + gridSize - barHeight),
-                                    Point(topLeft.x + barX + width * 2, topLeft.y + gridSize),
-                                    Scalar(255.0/2 * index, 255.0/2 * index, 255.0/2 * index),
-                                    -1
-                            )
-                        }
+                    // Draw histogram
+                    val maxBin = histogramBins.max()!!
+                    histogramBins.mapIndexed { index, value ->
+                        val barHeight = gridSize * (value / maxBin)
+                        val barX = (gridSize / (numberOfBins + 1)) * index
+                        val width = gridSize / ((numberOfBins + 1) * 2)
 
+                        Core.rectangle(preprocessed,
+                                Point(topLeft.x + barX + width, topLeft.y + gridSize - barHeight),
+                                Point(topLeft.x + barX + width * 2, topLeft.y + gridSize),
+                                Scalar(180.0 + (index % 2 * 60), 0.0, 0.0),
+                                -1
+                        )
                     }
 
-//                    return preprocessed
-//
-//                    return submat
-//
-//                    return dst
+                    // Draw guess
+                    val sum = histogramBins.sum()
+
+                    val threshold = 0.5
+                    if (histogramBins.first() > histogramBins.last()) { // Black
+                        if ((histogramBins[0] + histogramBins[1] + histogramBins[2] + histogramBins[3] + histogramBins[4]) / sum > threshold) {
+                            Core.rectangle(preprocessed, Point(fullRectangle.x+1.0, fullRectangle.y+1.0), Point(fullRectangle.br().x-1, fullRectangle.br().y-1),
+                                    Scalar(0.0, 0.0, 0.0)
+                            )
+                        }
+                    } else { // White
+                        if (histogramBins[numberOfBins-1] / sum > threshold) {
+                            Core.rectangle(preprocessed, Point(fullRectangle.x+1.0, fullRectangle.y+1.0), Point(fullRectangle.br().x-1, fullRectangle.br().y-1),
+                                    Scalar(255.0, 255.0, 255.0)
+                            )
+                        }
+                    }
                 }
             }
         }
-//        return white
-
-
-
-
 
         return preprocessed
     }
