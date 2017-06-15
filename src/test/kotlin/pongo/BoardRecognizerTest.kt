@@ -28,10 +28,15 @@ class BoardRecognizerTest {
     }
 
     @Test
+    fun recognizeBoard4() {
+        recognizer.recognize(getFile("board4_crop.jpg"))
+    }
+
+    @Test
     fun testAll() {
         recognizeBoard1()
         recognizeBoard2()
-//        recognizeBoard3()
+        recognizeBoard4()
     }
 
     private fun getFile(name: String): File {

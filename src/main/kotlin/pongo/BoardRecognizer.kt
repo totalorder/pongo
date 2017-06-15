@@ -68,17 +68,18 @@ class BoardRecognizer {
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_RGB2GRAY)
         gray.convertTo(gray, CvType.CV_8U)
 
-        if (false) {
+        if (true) {
             // Resize
             val maxSize = 1024.0
             if (gray.width() > maxSize || gray.height() > maxSize) {
-                val size = largestSecondRootSizeUnderRoof(gray.size(), maxSize)
-                Imgproc.resize(gray, gray, size, 0.0, 0.0, Imgproc.INTER_LINEAR)
+
+                Imgproc.resize(gray, gray, Size(maxSize, maxSize), 0.0, 0.0, Imgproc.INTER_LINEAR)
             }
         }
 
         // Filter away the colors lighter than the middle color
         filterMiddleColor(gray)
+
         // Equalize histogram
         Imgproc.equalizeHist(gray, gray)
         val preprocessed = gray.clone()
@@ -94,6 +95,7 @@ class BoardRecognizer {
         // Threshold
         Imgproc.adaptiveThreshold(
                 gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 65, -10.0)
+
 
         // Dilation
         val dilationSize = 2.0
@@ -129,60 +131,8 @@ class BoardRecognizer {
                 Point(gray.width() * inset, gray.height() - gray.height() * inset * perspectiveRatio * heightRatio)))
 //        Core.fillPoly(gray, cornerZonePoly, Scalar(0.0, 0.0, 0.0))
 
-        if (true) {
-            // Hough lines
-
-            // Canny
-            val cannyEdges = Mat()
-            val cannyThreshold = 1
-            val ratio = 3
-            Imgproc.Canny(gray, cannyEdges, cannyThreshold.toDouble(), (cannyThreshold * ratio).toDouble())
-
-            val linesMat = Mat()
-            Imgproc.HoughLinesP(cannyEdges, linesMat, 1.0, Math.PI / (180 * 2), 175, 100.0, 85.0)
-
-            Imgproc.cvtColor(cannyEdges, cannyEdges, Imgproc.COLOR_GRAY2RGB)
-            (0..linesMat.cols() - 1)
-                    .map { linesMat.get(0, it) }
-                    .forEach {
-                        val tl = Point(it[0], it[1])
-                        val br = Point(it[2], it[3])
-                        //                    if (distance(tl, br) > gray.width() / 4) {
-
-                        Core.line(cannyEdges, tl, br, Scalar(0.0, 0.0, 255.0), 1)
-                        //                    }
-                    }
-            return cannyEdges
-            val lines = (0..linesMat.cols() - 1)
-                    .map { linesMat.get(0, it) }
-                    .map { Line(Point(it[0], it[1]), Point(it[2], it[3])) }
-
-            val linePairs = (0..lines.size - 1)
-                    .fold(listOf<Pair<Line,Line>>(), { acc, i ->
-                        (0..lines.size - 1).fold(acc, { subacc, subi ->
-                            if (i == subi) subacc else subacc + Pair(lines[i], lines[subi])
-                        })
-                    })
-                    .filter { Math.abs(it.first.angle() - it.second.angle()) < 0.6 }
-                    .filter { distanceBetweenLines(cannyEdges.size(), it.first, it.second, cannyEdges) > -1 }
-
-//            lines.map {
-//                Core.line(cannyEdges, it.first, it.second, Scalar(0.0, 0.0, 255.0), 1)
-//            }
-
-            linePairs.map {
-                val color = Scalar(255.0, 0.0, 255.0)
-//                Core.line(cannyEdges, it.first.first, it.first.second, color, 1)
-//                Core.line(cannyEdges, it.second.first, it.second.second, color, 1)
-            }
-
-            return cannyEdges
-        }
-
-
         // Contours
         val contouredMat = gray.clone()
-//        Core.bitwise_not(contouredMat, contouredMat)
 
         val contours = ArrayList<MatOfPoint>()
         val hierarchy = Mat()
@@ -192,7 +142,7 @@ class BoardRecognizer {
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_GRAY2RGB)
 
         // Get the biggest two 4-sided polygons
-        val biggestContours = contours
+        val polygons = contours
                 // Get approximated polygons
                 .mapIndexed { index, matOfPoint ->
                     // Convert to floats
@@ -212,15 +162,34 @@ class BoardRecognizer {
                     Contour(index, poly)
                 }
                 // Keep only 4-sided polys
-                .filter { (_, matOfPoint) -> matOfPoint.total() >= 4L }
+                .filter { (_, matOfPoint) -> matOfPoint.total() == 4L }
                 // Draw all polys in blue
                 .map {
                     contours.set(it.index, it.matOfPoint)
-                    Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 2)
+                    Imgproc.drawContours(gray, contours, it.index, Scalar(0.0, 50.0, 255.0), 1)
                     it
                 }
                 .sortedBy { it.area() }
-                .takeLast(2)
+
+        val bigPolygons = polygons.filter {
+            it.area() > gray.size().area() / 1500.0
+        }.map {
+            Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 2)
+            it
+        }
+
+        val averagePolySize = bigPolygons.map { it.area() }.average()
+        val perfectPolygons = bigPolygons
+                .filter { Math.abs(it.area() - averagePolySize) < averagePolySize * 0.4 }
+                .map {
+                    Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 2)
+                    it
+                }
+
+        return gray
+
+        val biggestContours = polygons
+
 
         // Pick the grid out of two polys that might be either the board outline, or the grid outline
         // Get the smaller of the largest two polys if it's at least 90% of the area of the largest one,
@@ -495,91 +464,5 @@ class BoardRecognizer {
         val max = Math.max(size.height, size.width)
         val divisor = Math.pow(2.0, Math.ceil(Math.log(max / roof) / Math.log(2.0)))
         return Size(size.width / divisor, size.height / divisor)
-    }
-
-    fun distanceBetweenLines(box: Size, first: Line, second: Line, mat: Mat): Double {
-        val boxEdges = listOf(
-                Line(Point(0.0, 0.0), Point(box.width, 0.0)),
-                Line(Point(box.width, 0.0), Point(box.width, box.height)),
-                Line(Point(0.0, 0.0), Point(0.0, box.height)),
-                Line(Point(0.0, box.height), Point(box.width, box.height)))
-        var minDistance: Double? = null
-        val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
-        var fi: Point? = null
-        var si: Point? = null
-
-//        val firstIntersections = boxEdges.fold(listOf<Point>(), { acc, edge ->
-//            val inter = intersection(first, edge)
-//            if (inter == null) acc else acc + inter
-//        })
-
-
-        for (edge in boxEdges) {
-            val firstIntersection = intersection(first, edge)
-//            firstIntersection?.let {
-//                Core.circle(mat, firstIntersection, 5, color, -1)
-//            }
-            val secondIntersection = intersection(second, edge)
-//            secondIntersection?.let {
-//                Core.circle(mat, secondIntersection, 5, color, -1)
-//            }
-
-            if (firstIntersection != null && secondIntersection != null &&
-                    isPointInBox(firstIntersection, box) && isPointInBox(secondIntersection, box)) {
-                val dist = distance(firstIntersection, secondIntersection)
-                if (minDistance == null) {
-                    minDistance = dist
-                    fi = firstIntersection
-                    si = secondIntersection
-                } else if (dist < minDistance) {
-                    minDistance = dist
-                    fi = firstIntersection
-                    si = secondIntersection
-                }
-//                }
-
-            }
-        }
-
-//        Core.circle(mat, firstIntersection, 5, color, -1)
-
-        val maxDistanceThreshold = box.width / 40.0
-        val minDistanceThreshold = box.width / 350.0
-        Core.line(mat, Point(10.0, 10.0), Point(10.0 + maxDistanceThreshold, 10.0), color, 2)
-        Core.line(mat, Point(10.0, 15.0), Point(10.0 + minDistanceThreshold, 15.0), color, 2)
-        if (minDistance!! < maxDistanceThreshold) {
-            Core.line(mat, fi!!, si!!, color, 2)
-        }
-//
-        if (minDistance!! < maxDistanceThreshold) {
-            Core.line(mat, first.first, first.second, color, 2)
-            Core.line(mat, second.first, second.second, color, 2)
-        }
-        println(minDistance)
-
-        return minDistance!!
-    }
-
-    fun isPointInBox(point: Point, box: Size): Boolean {
-        return point.x >= 0 && point.x < box.width && point.y >= 0 && point.y < box.height
-    }
-
-    fun intersection(first: Line, second: Line): Point? {
-        val d = (first.first.x - first.second.x) * (second.first.y - second.second.y) -
-                (first.first.y - first.second.y) * (second.first.x - second.second.x)
-        if (d == 0.0) {
-            return null
-        }
-
-        val xi = ((second.first.x - second.second.x) *
-                (first.first.x * first.second.y - first.first.y * first.second.x) -
-                (first.first.x - first.second.x) *
-                        (second.first.x * second.second.y - second.first.y * second.second.x)) / d
-        val yi = ((second.first.y - second.second.y) *
-                (first.first.x * first.second.y - first.first.y * first.second.x) -
-                (first.first.y - first.second.y) *
-                        (second.first.x * second.second.y - second.first.y * second.second.x)) / d
-
-        return Point(xi, yi)
     }
 }
