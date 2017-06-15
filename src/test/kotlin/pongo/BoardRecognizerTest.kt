@@ -5,9 +5,6 @@ import org.junit.Test
 import java.io.File
 
 class BoardRecognizerTest {
-    val fileName = "board.jpg"
-    val input = File(BoardRecognizerTest::class.java.classLoader.getResource(fileName).toURI())!!
-
     private lateinit var recognizer: BoardRecognizer
 
     @Before
@@ -16,10 +13,29 @@ class BoardRecognizerTest {
     }
 
     @Test
-    fun recognize() {
+    fun recognizeBoard1() {
+        recognizer.recognize(getFile("board1_crop.jpg"))
+    }
 
-        recognizer.recognize(input)
+    @Test
+    fun recognizeBoard2() {
+        recognizer.recognize(getFile("board2_crop.jpg"))
+    }
 
+    @Test
+    fun recognizeBoard3() {
+        recognizer.recognize(getFile("board3_crop.jpg"))
+    }
+
+    @Test
+    fun testAll() {
+        recognizeBoard1()
+        recognizeBoard2()
+//        recognizeBoard3()
+    }
+
+    private fun getFile(name: String): File {
+        return File(BoardRecognizerTest::class.java.classLoader.getResource(name).toURI())
     }
 
 }

@@ -1,5 +1,4 @@
 package pongo
-import com.sun.javafx.geom.Matrix3f
 import org.opencv.core.*
 import java.io.*
 import org.opencv.highgui.Highgui
@@ -13,14 +12,19 @@ import org.opencv.core.CvType
 import org.opencv.utils.Converters
 import org.opencv.core.MatOfFloat
 import org.opencv.core.MatOfInt
-import org.opencv.core.CvType.channels
 import java.util.Arrays
-
-
-
 
 data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
     fun area(): Double  = Imgproc.contourArea(matOfPoint)
+}
+
+data class Line(val first: Point, val second: Point) {
+    fun angle(): Double = Math.abs(Math.atan2(first.y - second.y, first.x - second.x) *  180 / Math.PI)
+}
+
+fun <T, R> kotlin.collections.Iterable<T>.mapIndex(transform: (Int) -> R): kotlin.collections.List<R> {
+    var idx = 0
+    return this.map { idx++ }.map { transform(it) }
 }
 
 class BoardRecognizer {
@@ -33,7 +37,7 @@ class BoardRecognizer {
     fun recognize(file: File) {
         val original = Highgui.imread(file.absolutePath, Highgui.CV_LOAD_IMAGE_COLOR)
 
-        val output = File("${System.getProperty("java.io.tmpdir")}/test/recognize.jpg")
+        val output = File("${System.getProperty("java.io.tmpdir")}/test/${file.name}.jpg")
 
         File(output.parent).mkdirs()
         println(output.absolutePath)
@@ -47,6 +51,16 @@ class BoardRecognizer {
     }
 
     private fun process(original: Mat): Mat {
+        if (false) {
+            // Uncrop square
+            val bound = Math.max(original.width(), original.height()).toDouble()
+            val cropLeft = (bound - original.width()).toInt() / 2
+            val cropRight = (bound - original.width()).toInt() - cropLeft
+            val cropTop = (bound - original.height()).toInt() / 2
+            val cropBottom = (bound - original.height()).toInt() - cropTop
+            Imgproc.copyMakeBorder(original, original, cropTop, cropBottom, cropLeft, cropRight, Imgproc.BORDER_CONSTANT, Scalar(0.0, 0.0, 0.0))
+        }
+
         // Clone
         val gray = original.clone()
 
@@ -54,30 +68,125 @@ class BoardRecognizer {
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_RGB2GRAY)
         gray.convertTo(gray, CvType.CV_8U)
 
+        if (false) {
+            // Resize
+            val maxSize = 1024.0
+            if (gray.width() > maxSize || gray.height() > maxSize) {
+                val size = largestSecondRootSizeUnderRoof(gray.size(), maxSize)
+                Imgproc.resize(gray, gray, size, 0.0, 0.0, Imgproc.INTER_LINEAR)
+            }
+        }
+
+        // Filter away the colors lighter than the middle color
+        filterMiddleColor(gray)
         // Equalize histogram
         Imgproc.equalizeHist(gray, gray)
-
         val preprocessed = gray.clone()
-
-        // Contrast
-        contrast(gray, 0.1)
 
         // Blur
         Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.5)
 
-        // Threshhold
+        if (false) {
+            // Apply contrast
+            applyOnPixels(gray, { value -> Math.min(Math.round(value * value * 0.0195).toInt(), 255) })
+        }
+
+        // Threshold
         Imgproc.adaptiveThreshold(
-                gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 9, 4.0)
+                gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 65, -10.0)
 
         // Dilation
-        val dilationSize = 3.0
+        val dilationSize = 2.0
         val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(dilationSize, dilationSize))
         Imgproc.dilate(gray, gray, dilateKernel)
 
+        if (false) {
+            // Flood fill anything that touches the border
+            (0 until Math.max(gray.width(), gray.height()))
+                    .map {
+                        val top = Point(it.toDouble(), 0.0)
+                        val left = Point(0.0, it.toDouble())
+                        val right = Point(gray.width().toDouble() - 1, it.toDouble())
+                        val bottom = Point(it.toDouble(), gray.height().toDouble() - 1)
+
+                        listOf(top, left, right, bottom).map {
+                            if (it.x < gray.width() && it.y < gray.height()) {
+                                val floodMask = Mat()
+                                Imgproc.floodFill(gray, floodMask, it, Scalar(0.0, 0.0, 0.0))
+                            }
+                        }
+                    }
+        }
+
+        // Draw corner zone
+        val perspectiveRatio = 2.7
+        val heightRatio = 1.2
+        val inset = 0.06
+        val cornerZonePoly = listOf(MatOfPoint(
+                Point(gray.width() * inset * perspectiveRatio, gray.height() * inset * perspectiveRatio * heightRatio),
+                Point(gray.width() - gray.width() * inset * perspectiveRatio, gray.height() * inset * perspectiveRatio * heightRatio),
+                Point(gray.width() - gray.width() * inset, gray.height() - gray.height() * inset * perspectiveRatio * heightRatio),
+                Point(gray.width() * inset, gray.height() - gray.height() * inset * perspectiveRatio * heightRatio)))
+//        Core.fillPoly(gray, cornerZonePoly, Scalar(0.0, 0.0, 0.0))
+
+        if (true) {
+            // Hough lines
+
+            // Canny
+            val cannyEdges = Mat()
+            val cannyThreshold = 1
+            val ratio = 3
+            Imgproc.Canny(gray, cannyEdges, cannyThreshold.toDouble(), (cannyThreshold * ratio).toDouble())
+
+            val linesMat = Mat()
+            Imgproc.HoughLinesP(cannyEdges, linesMat, 1.0, Math.PI / (180 * 2), 175, 100.0, 85.0)
+
+            Imgproc.cvtColor(cannyEdges, cannyEdges, Imgproc.COLOR_GRAY2RGB)
+            (0..linesMat.cols() - 1)
+                    .map { linesMat.get(0, it) }
+                    .forEach {
+                        val tl = Point(it[0], it[1])
+                        val br = Point(it[2], it[3])
+                        //                    if (distance(tl, br) > gray.width() / 4) {
+
+                        Core.line(cannyEdges, tl, br, Scalar(0.0, 0.0, 255.0), 1)
+                        //                    }
+                    }
+            return cannyEdges
+            val lines = (0..linesMat.cols() - 1)
+                    .map { linesMat.get(0, it) }
+                    .map { Line(Point(it[0], it[1]), Point(it[2], it[3])) }
+
+            val linePairs = (0..lines.size - 1)
+                    .fold(listOf<Pair<Line,Line>>(), { acc, i ->
+                        (0..lines.size - 1).fold(acc, { subacc, subi ->
+                            if (i == subi) subacc else subacc + Pair(lines[i], lines[subi])
+                        })
+                    })
+                    .filter { Math.abs(it.first.angle() - it.second.angle()) < 0.6 }
+                    .filter { distanceBetweenLines(cannyEdges.size(), it.first, it.second, cannyEdges) > -1 }
+
+//            lines.map {
+//                Core.line(cannyEdges, it.first, it.second, Scalar(0.0, 0.0, 255.0), 1)
+//            }
+
+            linePairs.map {
+                val color = Scalar(255.0, 0.0, 255.0)
+//                Core.line(cannyEdges, it.first.first, it.first.second, color, 1)
+//                Core.line(cannyEdges, it.second.first, it.second.second, color, 1)
+            }
+
+            return cannyEdges
+        }
+
+
         // Contours
+        val contouredMat = gray.clone()
+//        Core.bitwise_not(contouredMat, contouredMat)
+
         val contours = ArrayList<MatOfPoint>()
         val hierarchy = Mat()
-        Imgproc.findContours(gray, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE)
+        Imgproc.findContours(contouredMat, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE)
 
         // Convert to color for drawing colored polygons
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_GRAY2RGB)
@@ -103,11 +212,11 @@ class BoardRecognizer {
                     Contour(index, poly)
                 }
                 // Keep only 4-sided polys
-                .filter { (_, matOfPoint) -> matOfPoint.total() == 4L }
+                .filter { (_, matOfPoint) -> matOfPoint.total() >= 4L }
                 // Draw all polys in blue
                 .map {
                     contours.set(it.index, it.matOfPoint)
-                    Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 0.0, 0.0), 1)
+                    Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 2)
                     it
                 }
                 .sortedBy { it.area() }
@@ -120,6 +229,16 @@ class BoardRecognizer {
             biggestContours[0] else biggestContours[1]
         // Draw the outline of the grid
         Imgproc.drawContours(gray, contours, gridPoly.index, Scalar(0.0, 0.0, 255.0), 2)
+
+        return gray
+
+        if (gridPoly.area() / gray.size().area() < 0.3) {
+            println("Did not find the board!")
+            return gray
+//            return originalComparer(gray, true)
+        }
+
+//        return gray
 
         // Unwarp perspective
         // Get mats representing the current perspective rectangle, and the goal square
@@ -216,6 +335,53 @@ class BoardRecognizer {
         return preprocessed
     }
 
+    fun filterMiddleColor(mat: Mat, numberOfBins: Int = 60) {
+        data class Bin(val index: Int, val value: Double)
+
+        // Calculate histogram
+        val hist = Mat()
+        Imgproc.calcHist(Arrays.asList(mat), MatOfInt(0),
+                Mat(), hist, MatOfInt(numberOfBins), MatOfFloat(0.0f, 255.0f))
+        val allBins = (0 until numberOfBins)
+                .map {
+                    Bin(it, hist.get(it, 0)[0])
+                }
+        val distanceThreshold = 0.5
+        val spanThreshold = 3.5
+        val selectedBins = allBins
+                .filter { it.index > numberOfBins / spanThreshold && it.index < numberOfBins - numberOfBins / spanThreshold }
+        val maxSelectedBin = selectedBins.reduce({left, right -> if (left.value > right.value) left else right})
+        val maxBin = allBins.map { it.value }.max()!!
+        for (binIndex in (selectedBins[0].index..maxSelectedBin.index).reversed()) {
+            val bin = allBins[binIndex]
+
+            if (bin.value < maxSelectedBin.value * distanceThreshold &&
+                    binIndex + 1 < allBins.size &&
+                    bin.value > allBins[binIndex + 1].value) {
+                break
+            }
+
+            applyOnPixels(mat, { value -> if (value < 255 / numberOfBins * bin.index) value else 255 })
+
+            if (false) {
+                // Draw histogram
+                val barHeight = mat.height() * (bin.value / maxBin)
+                val barX = (mat.width() / (numberOfBins + 1)) * bin.index
+                val width = mat.width() / ((numberOfBins + 1) * 2).toDouble()
+
+                Core.rectangle(mat,
+                        Point(barX + width, mat.height() - barHeight),
+                        Point(barX + width * 2, mat.height().toDouble()),
+                        Scalar(180.0 + (bin.index % 2 * 60), 0.0, 0.0),
+                        -1
+                )
+            }
+
+
+        }
+    }
+
+
     /**
      * Get the bounding right-angled rectangle (starting at origin)
      * of a non-right-angled rectangle
@@ -302,15 +468,118 @@ class BoardRecognizer {
     }
 
 
+    private fun applyOnPixels(mat: Mat, block: (value: Int) -> Int) {
+        val buff = ByteArray(mat.total().toInt() * mat.channels())
+        mat.get(0, 0, buff)
+        buff.forEachIndexed { index, byte -> buff[index] = block(byte.toInt() and 0xFF).toByte() }
+        mat.put(0, 0, buff)
+    }
+
+
     /**
      * Return a function that returns a mat where one half is the original, and the other half the supplied mat
      */
-    private fun compare(original: Mat): (mat: Mat) -> Mat {
+    private fun compare(original: Mat): (mat: Mat, toColor: Boolean) -> Mat {
         val clone = original.clone()
-        return { sample: Mat ->
+        return { sample: Mat, toColor: Boolean ->
+            if (toColor) {
+                Imgproc.cvtColor(clone, clone, Imgproc.COLOR_GRAY2RGB)
+            }
             sample.submat(0, clone.height(), 0, clone.width() / 2)
                     .copyTo(clone.submat(0, clone.height(), 0, clone.width() / 2))
             clone
         }
+    }
+
+    fun largestSecondRootSizeUnderRoof(size: Size, roof: Double): Size {
+        val max = Math.max(size.height, size.width)
+        val divisor = Math.pow(2.0, Math.ceil(Math.log(max / roof) / Math.log(2.0)))
+        return Size(size.width / divisor, size.height / divisor)
+    }
+
+    fun distanceBetweenLines(box: Size, first: Line, second: Line, mat: Mat): Double {
+        val boxEdges = listOf(
+                Line(Point(0.0, 0.0), Point(box.width, 0.0)),
+                Line(Point(box.width, 0.0), Point(box.width, box.height)),
+                Line(Point(0.0, 0.0), Point(0.0, box.height)),
+                Line(Point(0.0, box.height), Point(box.width, box.height)))
+        var minDistance: Double? = null
+        val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
+        var fi: Point? = null
+        var si: Point? = null
+
+//        val firstIntersections = boxEdges.fold(listOf<Point>(), { acc, edge ->
+//            val inter = intersection(first, edge)
+//            if (inter == null) acc else acc + inter
+//        })
+
+
+        for (edge in boxEdges) {
+            val firstIntersection = intersection(first, edge)
+//            firstIntersection?.let {
+//                Core.circle(mat, firstIntersection, 5, color, -1)
+//            }
+            val secondIntersection = intersection(second, edge)
+//            secondIntersection?.let {
+//                Core.circle(mat, secondIntersection, 5, color, -1)
+//            }
+
+            if (firstIntersection != null && secondIntersection != null &&
+                    isPointInBox(firstIntersection, box) && isPointInBox(secondIntersection, box)) {
+                val dist = distance(firstIntersection, secondIntersection)
+                if (minDistance == null) {
+                    minDistance = dist
+                    fi = firstIntersection
+                    si = secondIntersection
+                } else if (dist < minDistance) {
+                    minDistance = dist
+                    fi = firstIntersection
+                    si = secondIntersection
+                }
+//                }
+
+            }
+        }
+
+//        Core.circle(mat, firstIntersection, 5, color, -1)
+
+        val maxDistanceThreshold = box.width / 40.0
+        val minDistanceThreshold = box.width / 350.0
+        Core.line(mat, Point(10.0, 10.0), Point(10.0 + maxDistanceThreshold, 10.0), color, 2)
+        Core.line(mat, Point(10.0, 15.0), Point(10.0 + minDistanceThreshold, 15.0), color, 2)
+        if (minDistance!! < maxDistanceThreshold) {
+            Core.line(mat, fi!!, si!!, color, 2)
+        }
+//
+        if (minDistance!! < maxDistanceThreshold) {
+            Core.line(mat, first.first, first.second, color, 2)
+            Core.line(mat, second.first, second.second, color, 2)
+        }
+        println(minDistance)
+
+        return minDistance!!
+    }
+
+    fun isPointInBox(point: Point, box: Size): Boolean {
+        return point.x >= 0 && point.x < box.width && point.y >= 0 && point.y < box.height
+    }
+
+    fun intersection(first: Line, second: Line): Point? {
+        val d = (first.first.x - first.second.x) * (second.first.y - second.second.y) -
+                (first.first.y - first.second.y) * (second.first.x - second.second.x)
+        if (d == 0.0) {
+            return null
+        }
+
+        val xi = ((second.first.x - second.second.x) *
+                (first.first.x * first.second.y - first.first.y * first.second.x) -
+                (first.first.x - first.second.x) *
+                        (second.first.x * second.second.y - second.first.y * second.second.x)) / d
+        val yi = ((second.first.y - second.second.y) *
+                (first.first.x * first.second.y - first.first.y * first.second.x) -
+                (first.first.y - first.second.y) *
+                        (second.first.x * second.second.y - second.first.y * second.second.x)) / d
+
+        return Point(xi, yi)
     }
 }

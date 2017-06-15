@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+WIDTH=$(identify -format "%w" $1)
+HEIGHT=$(identify -format "%w" $1)
+BOUND=$(($WIDTH > $HEIGHT ? $WIDTH : $HEIGHT))
+convert $1 -gravity center -background black -extent "${BOUND}x${BOUND}" squarized-$1
