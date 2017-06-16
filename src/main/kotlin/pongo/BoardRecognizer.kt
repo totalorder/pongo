@@ -1,4 +1,5 @@
 package pongo
+import org.apache.commons.math3.stat.regression.SimpleRegression
 import org.opencv.core.*
 import java.io.*
 import org.opencv.highgui.Highgui
@@ -16,7 +17,6 @@ import java.util.Arrays
 import org.opencv.core.Core
 
 
-
 data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
     fun area(): Double  = Imgproc.contourArea(matOfPoint)
     fun getPoint(index: Int): Point {
@@ -28,12 +28,13 @@ data class Rect(private val unsortedPoints: List<Point>) {
     val points = sortedPoints(unsortedPoints)
 
     private fun sortedPoints(unsortedPoints: List<Point>): List<Point> {
-        val summedPoints = unsortedPoints.sortedBy { point -> point.x + point.y }
-        val topLeft = summedPoints.first()
-        val bottomRight = summedPoints.last()
-        val diffedPoints = unsortedPoints.sortedBy { point -> point.x - point.y }
-        val topRight = diffedPoints.last()
-        val bottomLeft = diffedPoints.first()
+        val ltr = unsortedPoints.sortedBy { it.x }
+        val ltrttb = ltr.take(2).sortedBy { it.y }
+        val rtlttb = ltr.takeLast(2).sortedBy { it.y }
+        val topLeft = ltrttb.first()
+        val bottomLeft = ltrttb.last()
+        val topRight = rtlttb.first()
+        val bottomRight = rtlttb.last()
         return listOf(topLeft, topRight, bottomRight, bottomLeft)
     }
 }
@@ -42,9 +43,12 @@ data class Line(val first: Point, val second: Point) {
     fun angle(): Double = Math.abs(Math.atan2(first.y - second.y, first.x - second.x) *  180 / Math.PI)
 }
 
-fun <T, R> kotlin.collections.Iterable<T>.mapIndex(transform: (Int) -> R): kotlin.collections.List<R> {
-    var idx = 0
-    return this.map { idx++ }.map { transform(it) }
+operator fun Point.plus(other: Point): Point {
+    return Point(this.x + other.x, this.y + other.y)
+}
+
+operator fun Point.times(other: Double): Point {
+    return Point(this.x * other, this.y * other)
 }
 
 class BoardRecognizer {
@@ -204,7 +208,13 @@ class BoardRecognizer {
                 .map {
                     Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 1)
                     it
-                }.map { Rect(it.matOfPoint.toArray().toList()) }
+                }.map {
+                    val rect = Rect(it.matOfPoint.toArray().toList())
+                    if (rect.points.distinct().count() != 4) {
+                        drawLine(gray, it.matOfPoint.toArray().toList(), Scalar(50.0, 0.0, 255.0), 3)
+                    }
+                    rect
+                }
 //                .sortedBy { it.points[0].x + it.points[0].y }
 //                .take(5)
 
@@ -265,7 +275,6 @@ class BoardRecognizer {
                             .filter { it.value.size > 1 }
                             .map {
                                 println("Double! ${it}")
-                                assert(false)
                             }
 
                     Pair(newLines, newPointLines)
@@ -274,18 +283,25 @@ class BoardRecognizer {
                 }
             })
 
-            outerAcc + Pair(side, mergedLines.first.values.toList())
+            outerAcc + Pair(side, mergedLines.first.values.filter { it.size > 3 }.toList())
         })
 
         lines.values.flatMap { lines ->
             lines.map { line ->
                 val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
-                line
+                val sortedLine = line
                         .sortedBy { distance(it, line.first()) }
-                        .reduce({ first, second ->
-                            Core.line(gray, first, second, color, 2)
-                            second
-                        })
+
+                val regression = linearRegression(sortedLine)
+                val firstToLast = linearRegression(listOf(sortedLine.first(), sortedLine.last()))
+
+                val perpen = perpendicularLine(firstToLast)
+
+                val lineCenter = Point(sortedLine.map { it.x }.average(), sortedLine.map { it.y }.average())
+                val firstIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.first(), sortedLine.first() + perpen))!!
+                val lastIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.last(), sortedLine.last() + perpen))!!
+                drawLine(gray, listOf(firstIntersection, lastIntersection), color, 2)
+
             }
         }
 
@@ -567,5 +583,59 @@ class BoardRecognizer {
         val max = Math.max(size.height, size.width)
         val divisor = Math.pow(2.0, Math.ceil(Math.log(max / roof) / Math.log(2.0)))
         return Size(size.width / divisor, size.height / divisor)
+    }
+
+    fun linearRegression(line: List<Point>): Point {
+        val sr = SimpleRegression()
+        line.forEach { sr.addData(it.x, it.y) }
+        return Point(1.0, sr.slope)
+
+        val p1 = Point(line.map { it.x }.average(), line.map { it.y }.average())
+        
+//        var xp1.x = 0.0
+//        var yp1.y = 0.0
+//        var xp1.y = 0.0
+        val x = line.map { (it.x - p1.x) * (it.x - p1.x) }.sum()
+//        val y = line.map { (it.y - p1.y) * (it.y - p1.y) }.sum()
+        val xy = line.map { (it.x - p1.x) * (it.y - p1.y) }.sum()
+        val beta1 = xy / x
+        val beta0 = p1.y - beta1 * p1.x
+        
+        return Point(beta0, beta1)
+    }
+
+    fun perpendicularLine(line: Point): Point {
+        val slope = -1 / (line.y / line.x)
+//        val angle = Math.atan2(line.y, line.x)
+//        val distance = 20
+//        val x = Math.sin(angle) * distance
+//        val y = Math.cos(angle) * distance
+        return Point(1.0, slope)
+    }
+
+    fun drawLine(mat: Mat, line: List<Point>, color: Scalar, width: Int) {
+        line.reduce({ first, second ->
+            Core.line(mat, first, second, color, width)
+            second
+        })
+    }
+
+    fun intersection(first: Line, second: Line): Point? {
+        val d = (first.first.x - first.second.x) * (second.first.y - second.second.y) -
+                (first.first.y - first.second.y) * (second.first.x - second.second.x)
+        if (d == 0.0) {
+            return null
+        }
+
+        val xi = ((second.first.x - second.second.x) *
+                (first.first.x * first.second.y - first.first.y * first.second.x) -
+                (first.first.x - first.second.x) *
+                        (second.first.x * second.second.y - second.first.y * second.second.x)) / d
+        val yi = ((second.first.y - second.second.y) *
+                (first.first.x * first.second.y - first.first.y * first.second.x) -
+                (first.first.y - first.second.y) *
+                        (second.first.x * second.second.y - second.first.y * second.second.x)) / d
+
+        return Point(xi, yi)
     }
 }
