@@ -10,7 +10,6 @@ import org.opencv.core.Mat
 import org.opencv.core.Scalar
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.CvType
-import org.opencv.utils.Converters
 import org.opencv.core.MatOfFloat
 import org.opencv.core.MatOfInt
 import java.util.Arrays
@@ -74,99 +73,195 @@ class BoardRecognizer {
         Runtime.getRuntime().exec("eog ${output.absolutePath}")
     }
 
+    private fun automat(block: (out: Mat) -> Unit): Mat {
+        val out = Mat()
+        block(out)
+        return out
+    }
+
+    private fun grayscale(mat: Mat): Mat {
+        val out = Mat()
+        Imgproc.cvtColor(mat, out, Imgproc.COLOR_RGB2GRAY)
+        out.convertTo(out, CvType.CV_8U)
+        return out
+    }
+
     private fun process(original: Mat): Mat {
-        if (false) {
-            // Uncrop square
-            val bound = Math.max(original.width(), original.height()).toDouble()
-            val cropLeft = (bound - original.width()).toInt() / 2
-            val cropRight = (bound - original.width()).toInt() - cropLeft
-            val cropTop = (bound - original.height()).toInt() / 2
-            val cropBottom = (bound - original.height()).toInt() - cropTop
-            Imgproc.copyMakeBorder(original, original, cropTop, cropBottom, cropLeft, cropRight, Imgproc.BORDER_CONSTANT, Scalar(0.0, 0.0, 0.0))
+        // Clone
+        val clone = original.clone()
+
+        val gray = grayscale(clone)
+
+        val resized = resize(gray, 1024.0)
+
+        val middleFiltered = filterMiddleColor(resized)
+
+        val equalized = automat { Imgproc.equalizeHist(middleFiltered, it) }
+
+        val blurred = automat { Imgproc.GaussianBlur(equalized, it, Size(5.0, 5.0), 0.5) }
+
+        val thresholded = automat { Imgproc.adaptiveThreshold(
+                blurred, it, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 65, -10.0) }
+
+        val dilated = dilate(thresholded, 2.0)
+
+        val contours = findContours(dilated)
+
+        val colored = automat { Imgproc.cvtColor(dilated, it, Imgproc.COLOR_GRAY2RGB) }
+
+        val quads = getQuads(contours, minArea = colored.size().area() / 1500.0)
+
+        val lines = getLines(quads)
+
+        val straightLines = getStraightLines(lines)
+
+        straightLines.map {
+            val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
+            drawLine(colored, it, color, 2)
         }
 
-        // Clone
-        val gray = original.clone()
+        return colored
+    }
 
-        // Grayscale
-        Imgproc.cvtColor(gray, gray, Imgproc.COLOR_RGB2GRAY)
-        gray.convertTo(gray, CvType.CV_8U)
-
-        if (true) {
-            // Resize
-            val maxSize = 1024.0
-            if (gray.width() > maxSize || gray.height() > maxSize) {
-
-                Imgproc.resize(gray, gray, Size(maxSize, maxSize), 0.0, 0.0, Imgproc.INTER_LINEAR)
+    private fun getStraightLines(lines: Map<Int, List<List<Point>>>): List<List<Point>> {
+        return lines.values.flatMap { lines ->
+            lines.map { line ->
+                getStraightLine(line)
             }
         }
+    }
 
-        // Filter away the colors lighter than the middle color
-        filterMiddleColor(gray)
+    private fun getStraightLine(line: List<Point>): List<Point> {
+        val sortedLine = line
+                .sortedBy { distance(it, line.first()) }
 
-        // Equalize histogram
-        Imgproc.equalizeHist(gray, gray)
-        val preprocessed = gray.clone()
+        val regression = linearRegression(sortedLine)
+        val firstToLast = linearRegression(listOf(sortedLine.first(), sortedLine.last()))
 
-        // Blur
-        Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.5)
+        val perpen = perpendicularLine(firstToLast)
 
-        if (false) {
-            // Apply contrast
-            applyOnPixels(gray, { value -> Math.min(Math.round(value * value * 0.0195).toInt(), 255) })
+        val lineCenter = Point(sortedLine.map { it.x }.average(), sortedLine.map { it.y }.average())
+        val firstIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.first(), sortedLine.first() + perpen))!!
+        val lastIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.last(), sortedLine.last() + perpen))!!
+        return listOf(firstIntersection, lastIntersection)
+    }
+
+    private fun getLines(quads: List<Contour>): Map<Int, List<List<Point>>> {
+        val averageArea = quads.map { it.area() }.average()
+        val averageSideLength = Math.sqrt(averageArea)
+
+        val rects = getRects(quads, averageArea, diffFactor = 0.4)
+        val polysByPoint: Map<Int, List<Pair<Point, Rect>>> = getRectsBySide(rects)
+
+        val lines = (0 until 4)
+                .fold(mapOf<Int, List<List<Point>>>(), { acc: Map<Int, List<List<Point>>>, side: Int ->
+                    // Map from side-id to list of Pair<Point, Rect>
+                    val linesForSide = getLinesForSide(side, rects, polysByPoint, averageSideLength)
+                    acc + Pair(side, linesForSide)
+        })
+        return lines
+    }
+
+    private fun getLinesForSide(side: Int,
+                                rects: List<Rect>,
+                                polysByPoint: Map<Int, List<Pair<Point, Rect>>>,
+                                averageSideLength: Double): List<List<Point>> {
+        val corner = getCorrespondingCorner(side)
+
+        val sideLines: Map<Point, List<Point>> = getSideLines(rects, side)
+
+        val pointLines: Map<Point, Point> = getPointLines(sideLines)
+
+        val mergedLines: Pair<Map<Point, List<Point>>, Map<Point, Point>> = sideLines.keys.fold(
+                Pair(sideLines, pointLines), { (lines, pointLines), point ->
+            connectCloseLines(lines, pointLines, point, polysByPoint, corner, averageSideLength)
+        })
+        return mergedLines.first.values.filter { it.size > 3 }.toList()
+    }
+
+    private fun connectCloseLines(
+            lines: Map<Point, List<Point>>,
+            pointLines: Map<Point, Point>,
+            point: Point, polysByPoint: Map<Int, List<Pair<Point, Rect>>>,
+            corner: Int, averageSideLength: Double): Pair<Map<Point, List<Point>>, Map<Point, Point>> {
+        val line = lines[pointLines[point]]!!
+        val otherPoint = findClosestPoint(polysByPoint, corner, point, averageSideLength)
+
+        return if (otherPoint != null) {
+            connectLines(lines, pointLines, otherPoint, point, line)
+        } else {
+            Pair(lines, pointLines)
         }
+    }
 
-        // Threshold
-        Imgproc.adaptiveThreshold(
-                gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY_INV, 65, -10.0)
+    private fun connectLines(lines: Map<Point, List<Point>>, pointLines: Map<Point, Point>, otherPoint: Point, point: Point, line: List<Point>): Pair<Map<Point, List<Point>>, Map<Point, Point>> {
+        val otherLine = lines[pointLines[otherPoint]]!!
+        val newLines = lines - pointLines[otherPoint]!! + Pair(pointLines[point]!!, line + otherLine)
+        val newPointLines = pointLines + otherLine.map { Pair(it, pointLines[point]!!) }
+        return Pair(newLines, newPointLines)
+    }
 
+    private fun findClosestPoint(polysByPoint: Map<Int, List<Pair<Point, Rect>>>, corner: Int, point: Point, averageSideLength: Double): Point? {
+        return polysByPoint[corner]!!
+                .map { Pair(distance(it.first, point), it.first) }
+                .filter { it.first < averageSideLength * 0.4 }
+                .sortedBy { it.first }
+                .map { it.second }
+                .takeLast(1)
+                .getOrNull(0)
+    }
 
-        // Dilation
-        val dilationSize = 2.0
-        val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(dilationSize, dilationSize))
-        Imgproc.dilate(gray, gray, dilateKernel)
+    private fun getPointLines(sideLines: Map<Point, List<Point>>): Map<Point, Point> {
+        return sideLines.entries.fold(mapOf<Point, Point>(), { acc, line ->
+            acc + line.value.map { Pair(it, line.key) }
+        })
+    }
 
-        if (false) {
-            // Flood fill anything that touches the border
-            (0 until Math.max(gray.width(), gray.height()))
-                    .map {
-                        val top = Point(it.toDouble(), 0.0)
-                        val left = Point(0.0, it.toDouble())
-                        val right = Point(gray.width().toDouble() - 1, it.toDouble())
-                        val bottom = Point(it.toDouble(), gray.height().toDouble() - 1)
+    private fun getSideLines(rects: List<Rect>, side: Int): Map<Point, List<Point>> {
+        return rects.fold(mapOf<Point, List<Point>>(), { acc, poly ->
+            val sideLine = getSideLine(side, poly)
+            acc + Pair(sideLine.last(), sideLine)
+        })
+    }
 
-                        listOf(top, left, right, bottom).map {
-                            if (it.x < gray.width() && it.y < gray.height()) {
-                                val floodMask = Mat()
-                                Imgproc.floodFill(gray, floodMask, it, Scalar(0.0, 0.0, 0.0))
-                            }
-                        }
-                    }
+    private fun getSideLine(side: Int, poly: Rect): List<Point> {
+        return when (side) {
+            0 -> listOf(poly.points[3], poly.points[0]) // (left side)   bottomLeft, topLeft
+            1 -> listOf(poly.points[2], poly.points[1]) // (right side)  bottomRight, topRight
+            2 -> listOf(poly.points[0], poly.points[1]) // (top side)    topLeft, topRight
+            3 -> listOf(poly.points[3], poly.points[2]) // (bottom side) bottomLeft, bottomRight
+            else -> throw IllegalArgumentException("Invalid value: " + side)
         }
+    }
 
-        // Draw corner zone
-        val perspectiveRatio = 2.7
-        val heightRatio = 1.2
-        val inset = 0.06
-        val cornerZonePoly = listOf(MatOfPoint(
-                Point(gray.width() * inset * perspectiveRatio, gray.height() * inset * perspectiveRatio * heightRatio),
-                Point(gray.width() - gray.width() * inset * perspectiveRatio, gray.height() * inset * perspectiveRatio * heightRatio),
-                Point(gray.width() - gray.width() * inset, gray.height() - gray.height() * inset * perspectiveRatio * heightRatio),
-                Point(gray.width() * inset, gray.height() - gray.height() * inset * perspectiveRatio * heightRatio)))
-//        Core.fillPoly(gray, cornerZonePoly, Scalar(0.0, 0.0, 0.0))
+    private fun getCorrespondingCorner(side: Int): Int {
+        return when (side) {
+            0 -> 3 // (left side)   topLeft -> bottomLeft
+            1 -> 2 // (right side)  topRight -> bottomRight
+            2 -> 0 // (top side)    topRight -> topLeft
+            3 -> 3 // (bottom side) bottomRight -> bottomLeft
+            else -> throw IllegalArgumentException("Invalid value: " + side)
+        }
+    }
 
-        // Contours
-        val contouredMat = gray.clone()
+    private fun getRects(quads: List<Contour>, averageArea: Double, diffFactor: Double): List<Rect> {
+        return quads
+                .filter { Math.abs(it.area() - averageArea) < averageArea * diffFactor }
+                .map {
+                    Rect(it.matOfPoint.toArray().toList())
+                }
+    }
 
-        val contours = ArrayList<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(contouredMat, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE)
+    private fun getRectsBySide(perfectRects: List<Rect>): Map<Int, List<Pair<Point, Rect>>> {
+        return perfectRects.fold(mapOf<Int, List<Pair<Point, Rect>>>(), { acc, poly ->
+            (0 until 4).fold(acc, { subacc, i: Int ->
+                subacc + Pair(i, acc.getOrDefault(i, listOf()) + Pair(poly.points[i], poly))
+            })
+        })
+    }
 
-        // Convert to color for drawing colored polygons
-        Imgproc.cvtColor(gray, gray, Imgproc.COLOR_GRAY2RGB)
-
-        // Get the biggest two 4-sided polygons
-        val polygons = contours
+    private fun getQuads(contours: ArrayList<MatOfPoint>, minArea: Double): List<Contour> {
+        return contours
                 // Get approximated polygons
                 .mapIndexed { index, matOfPoint ->
                     // Convert to floats
@@ -190,120 +285,36 @@ class BoardRecognizer {
                 // Draw all polys in blue
                 .map {
                     contours.set(it.index, it.matOfPoint)
-//                    Imgproc.drawContours(gray, contours, it.index, Scalar(0.0, 50.0, 255.0), 1)
                     it
                 }
-                .sortedBy { it.area() }
-
-        val bigPolygons = polygons.filter {
-            it.area() > gray.size().area() / 1500.0
-        }.map {
-//            Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 1)
-            it
-        }
-
-        val averagePolySize = bigPolygons.map { it.area() }.average()
-        val perfectPolygons = bigPolygons
-                .filter { Math.abs(it.area() - averagePolySize) < averagePolySize * 0.4 }
-                .map {
-//                    Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 1)
-                    it
-                }.map {
-                    Rect(it.matOfPoint.toArray().toList())
-                }
-
-        val averageSideLength = Math.sqrt(averagePolySize)
-
-        val polysByPoint: Map<Int, List<Pair<Point, Rect>>> = perfectPolygons.fold(mapOf<Int, List<Pair<Point, Rect>>>(), { acc, poly ->
-            (0 until 4).fold(acc, { subacc, i: Int ->
-                subacc + Pair(i, acc.getOrDefault(i, listOf()) + Pair(poly.points[i], poly))
-            })
-        })
-
-        val lines = (0 until 4).fold(mapOf<Int,List<List<Point>>>(), { outerAcc: Map<Int,List<List<Point>>>, side: Int ->
-            val direction = when(side) {
-                0 -> 3
-                1 -> 2
-                2 -> 0
-                3 -> 3
-                else -> throw IllegalArgumentException("Invalid value: " + side)
-            }
-            val sideLines = perfectPolygons.fold(mapOf<Point, List<Point>>(), { acc, poly ->
-                val line = when(side) {
-                    0 -> listOf(poly.points[3], poly.points[0])
-                    1 -> listOf(poly.points[2], poly.points[1])
-                    2 -> listOf(poly.points[0], poly.points[1])
-                    3 -> listOf(poly.points[3], poly.points[2])
-                    else -> throw IllegalArgumentException("Invalid value: " + side)
-                }
-
-                acc + Pair(line.last(), line)
-            })
-
-
-            val pointLines = sideLines.entries.fold(mapOf<Point, Point>(), { acc, line ->
-                acc + line.value.map { Pair(it, line.key) }
-            })
-
-            val mergedLines = sideLines.keys.fold(Pair(sideLines, pointLines), { (lines, pointLines), point ->
-
-                val line = lines[pointLines[point]]!!
-                val otherPoint = polysByPoint[direction]!!
-                        .map { Pair(distance(it.first, point), it.first) }
-                        .filter { it.first < averageSideLength * 0.4 }
-                        .sortedBy { it.first }
-                        .map { it.second }
-                        .takeLast(1)
-                        .getOrNull(0)
-1
-                if (otherPoint != null) {
-                    val otherLine = lines[pointLines[otherPoint]]!!
-                    val newLines = lines - pointLines[otherPoint]!! + Pair(pointLines[point]!!, line + otherLine)
-                    val newPointLines = pointLines + otherLine.map { Pair(it, pointLines[point]!!) }
-
-                    // Detect duplicates
-                    lines.entries
-                            .map { entry ->
-                                entry.value.map {
-                                    Pair(entry.key, it) } }
-                            .flatMap { it }
-                            .groupBy { it.second }.entries
-                            .filter { it.value.size > 1 }
-                            .map {
-                                println("Double! ${it}")
-                            }
-
-                    Pair(newLines, newPointLines)
-                } else {
-                    Pair(lines, pointLines)
-                }
-            })
-
-            outerAcc + Pair(side, mergedLines.first.values.filter { it.size > 3 }.toList())
-        })
-
-        lines.values.flatMap { lines ->
-            lines.map { line ->
-                val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
-                val sortedLine = line
-                        .sortedBy { distance(it, line.first()) }
-
-                val regression = linearRegression(sortedLine)
-                val firstToLast = linearRegression(listOf(sortedLine.first(), sortedLine.last()))
-
-                val perpen = perpendicularLine(firstToLast)
-
-                val lineCenter = Point(sortedLine.map { it.x }.average(), sortedLine.map { it.y }.average())
-                val firstIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.first(), sortedLine.first() + perpen))!!
-                val lastIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.last(), sortedLine.last() + perpen))!!
-                drawLine(gray, listOf(firstIntersection, lastIntersection), color, 2)
-            }
-        }
-
-        return gray
+                .filter { it.area() >= minArea }
     }
 
-    fun filterMiddleColor(mat: Mat, numberOfBins: Int = 60) {
+    private fun findContours(mat: Mat): ArrayList<MatOfPoint> {
+        val contours = ArrayList<MatOfPoint>()
+        Imgproc.findContours(mat.clone(), contours, Mat(), Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE)
+        return contours
+    }
+
+    private fun dilate(mat: Mat, dilationSize: Double): Mat {
+        val out = Mat()
+        val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(dilationSize, dilationSize))
+        Imgproc.dilate(mat, out, dilateKernel)
+        return out
+    }
+
+    private fun resize(mat: Mat, maxSize: Double): Mat {
+        val out = Mat()
+        if (mat.width() > maxSize || mat.height() > maxSize) {
+            Imgproc.resize(mat, out, Size(maxSize, maxSize), 0.0, 0.0, Imgproc.INTER_LINEAR)
+            return out
+        }
+        return mat
+    }
+
+    fun filterMiddleColor(mat: Mat, numberOfBins: Int = 60): Mat {
+        val out = mat.clone()
+        // Filter away the colors lighter than the middle color
         data class Bin(val index: Int, val value: Double)
 
         // Calculate histogram
@@ -329,17 +340,17 @@ class BoardRecognizer {
                 break
             }
 
-            applyOnPixels(mat, { value -> if (value < 255 / numberOfBins * bin.index) value else 255 })
+            applyOnPixels(out, { value -> if (value < 255 / numberOfBins * bin.index) value else 255 })
 
             if (false) {
                 // Draw histogram
-                val barHeight = mat.height() * (bin.value / maxBin)
-                val barX = (mat.width() / (numberOfBins + 1)) * bin.index
-                val width = mat.width() / ((numberOfBins + 1) * 2).toDouble()
+                val barHeight = out.height() * (bin.value / maxBin)
+                val barX = (out.width() / (numberOfBins + 1)) * bin.index
+                val width = out.width() / ((numberOfBins + 1) * 2).toDouble()
 
-                Core.rectangle(mat,
-                        Point(barX + width, mat.height() - barHeight),
-                        Point(barX + width * 2, mat.height().toDouble()),
+                Core.rectangle(out,
+                        Point(barX + width, out.height() - barHeight),
+                        Point(barX + width * 2, out.height().toDouble()),
                         Scalar(180.0 + (bin.index % 2 * 60), 0.0, 0.0),
                         -1
                 )
@@ -347,6 +358,7 @@ class BoardRecognizer {
 
 
         }
+        return out
     }
 
 
@@ -435,34 +447,11 @@ class BoardRecognizer {
         mat.put(0, 0, buff)
     }
 
-
     private fun applyOnPixels(mat: Mat, block: (value: Int) -> Int) {
         val buff = ByteArray(mat.total().toInt() * mat.channels())
         mat.get(0, 0, buff)
         buff.forEachIndexed { index, byte -> buff[index] = block(byte.toInt() and 0xFF).toByte() }
         mat.put(0, 0, buff)
-    }
-
-
-    /**
-     * Return a function that returns a mat where one half is the original, and the other half the supplied mat
-     */
-    private fun compare(original: Mat): (mat: Mat, toColor: Boolean) -> Mat {
-        val clone = original.clone()
-        return { sample: Mat, toColor: Boolean ->
-            if (toColor) {
-                Imgproc.cvtColor(clone, clone, Imgproc.COLOR_GRAY2RGB)
-            }
-            sample.submat(0, clone.height(), 0, clone.width() / 2)
-                    .copyTo(clone.submat(0, clone.height(), 0, clone.width() / 2))
-            clone
-        }
-    }
-
-    fun largestSecondRootSizeUnderRoof(size: Size, roof: Double): Size {
-        val max = Math.max(size.height, size.width)
-        val divisor = Math.pow(2.0, Math.ceil(Math.log(max / roof) / Math.log(2.0)))
-        return Size(size.width / divisor, size.height / divisor)
     }
 
     fun linearRegression(line: List<Point>): Point {
