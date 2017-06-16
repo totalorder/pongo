@@ -2,12 +2,11 @@ package pongo
 
 import org.opencv.core.Point
 
-fun straightenLines(lines: Map<Int, List<List<Point>>>): List<List<Point>> {
-    return lines.values.flatMap { lines ->
-        lines.map { line ->
-            getStraightLine(line)
-        }
-    }
+fun straightenLines(lines: Map<Int, List<List<Point>>>): Map<Int, List<List<Point>>> {
+    return (0 until 4).fold(lines, { lines, side ->
+        val straighLines: List<List<Point>> = lines[side]!!.map { getStraightLine(it) }
+        lines + Pair(side, straighLines)
+    })
 }
 
 fun findLines(quads: List<Contour>): Map<Int, List<List<Point>>> {

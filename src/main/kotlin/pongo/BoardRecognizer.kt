@@ -56,12 +56,26 @@ class BoardRecognizer {
 
         val lines = findLines(quads)
 
-        val straightLines = straightenLines(lines)
+        val straightLines: Map<Int, List<List<Point>>> = straightenLines(lines)
 
-        straightLines.map {
-            val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
-            drawLine(colored, it, color, 2)
+        straightLines.values.flatMap { lines: List<List<Point>> ->
+            lines.map {
+                val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
+                drawLine(colored, it, color, 2)
+            }
         }
+
+        val left = straightLines[0]!!.sortedBy { line -> line.map { it.x }.min() }.first()
+        val right = straightLines[1]!!.sortedBy { line -> line.map { it.x }.max() }.last()
+        val top = straightLines[2]!!.sortedBy { line -> line.map { it.y }.min() }.first()
+        val bottom = straightLines[3]!!.sortedBy { line -> line.map { it.y }.max() }.last()
+        val topLeft = intersection(top, left)!!
+        val topRight = intersection(top, right)!!
+        val bottomRight = intersection(bottom, right)!!
+        val bottomLeft = intersection(bottom, left)!!
+
+        val bound = listOf(topLeft, topRight, bottomRight, bottomLeft, topLeft)
+        drawLine(colored, bound, org.opencv.core.Scalar(0.0, 0.0, 255.0), 3)
 
         return colored
     }

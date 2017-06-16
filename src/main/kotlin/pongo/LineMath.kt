@@ -24,6 +24,13 @@ fun drawLine(mat: Mat, line: List<Point>, color: Scalar, width: Int) {
     })
 }
 
+fun intersection(first: List<Point>, second: List<Point>): Point? {
+    if (first.size + second.size != 4) {
+        throw IllegalArgumentException("Lists must be of length 2!")
+    }
+    return intersection(Line(first[0], first[1]), Line(second[0], second[1]))
+}
+
 fun intersection(first: Line, second: Line): Point? {
     val d = (first.first.x - first.second.x) * (second.first.y - second.second.y) -
             (first.first.y - first.second.y) * (second.first.x - second.second.x)
