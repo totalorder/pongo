@@ -13,9 +13,15 @@ import org.opencv.utils.Converters
 import org.opencv.core.MatOfFloat
 import org.opencv.core.MatOfInt
 import java.util.Arrays
+import org.opencv.core.Core
+
+
 
 data class Contour(val index: Int, val matOfPoint: MatOfPoint) {
     fun area(): Double  = Imgproc.contourArea(matOfPoint)
+    fun getPoint(index: Int): Point {
+        return matOfPoint.toArray()[index]
+    }
 }
 
 data class Line(val first: Point, val second: Point) {
@@ -185,6 +191,74 @@ class BoardRecognizer {
                     Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 2)
                     it
                 }
+
+        val averageSideLength = Math.sqrt(averagePolySize)
+
+        val polysByPoint = perfectPolygons.fold(mapOf<Int, List<Pair<Point, Contour>>>(), { acc, poly ->
+            (0 until 4).fold(acc, { subacc, i: Int ->
+                subacc + Pair(i, acc.getOrDefault(i, listOf()) + Pair(poly.getPoint(i), poly))
+            })
+        })
+
+        val verticalLines = (0..1).map {
+            val correspondingAbove = if (it == 0) 3 else 2
+
+            data class Data(val currentPoints: List<Pair<Point, Contour>>,
+                            val lines: Map<Point, List<Point>>,
+                            val pointLines: Map<Point, Point>)
+            val lines = perfectPolygons.fold(mapOf<Point, List<Point>>(), { acc, poly ->
+                val line = if (it == 0) listOf(poly.getPoint(0), poly.getPoint(3)) else listOf(poly.getPoint(1), poly.getPoint(2))
+                acc + Pair(line.first(), line)
+            })
+            val pointLines = lines.entries.fold(mapOf<Point, Point>(), { acc, line ->
+                acc + line.value.map { Pair(line.key, it) }
+            })
+
+            val data = Data(polysByPoint[correspondingAbove]!!, mapOf<Point, List<Point>>(), mapOf<Point, Point>())
+//            val data = Data(polysByPoint[correspondingAbove]!!, mapOf<Point, List<Point>>(), mapOf<Point, Point>())
+
+            polysByPoint[it]!!.fold(data, { acc, poly ->
+                val otherPoly = acc.currentPoints
+                        .map { Pair(distance(it.first, poly.first), it) }
+                        .filter { it.first < averageSideLength * 0.3 }
+                        .sortedBy { it.first }
+                        .map { it.second }
+                        .takeLast(1)
+                        .getOrNull(0)
+                if (otherPoly != null) {
+                    val otherLinePoint = acc.pointLines[otherPoly.first]
+                    val linePoint: Point? = acc.pointLines[poly.first]
+                    val polyLine: List<Point> = linePoint?.let { acc.lines.getOrDefault(linePoint, listOf(poly.first)) } ?: listOf(poly.first)
+                    val otherPolyLine = otherLinePoint?.let { acc.lines.getOrDefault(otherLinePoint, listOf(otherPoly.first)) } ?: listOf(otherPoly.first)
+                    val line = polyLine + otherPolyLine
+                    val newLinePoint = otherLinePoint ?: linePoint ?: poly.first
+                    val newCurrentPoints = acc.currentPoints - listOf(poly, otherPoly)
+                    val newLines = (acc.lines + Pair(newLinePoint, line))
+                            .let { if (otherLinePoint != null) it - (linePoint ?: poly.first) else it }
+                    val newPointLines =  acc.pointLines + Pair(poly.first, newLinePoint) + Pair(otherPoly.first, newLinePoint)
+                    Data(newCurrentPoints, newLines, newPointLines)
+                } else {
+                    acc
+                }
+            }).
+                    lines.values.map {
+                val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
+                it.reduce({ first, second ->
+                    Core.line(gray, first, second, color, 2)
+                    second
+                })
+            }
+
+//            polysByPoint[it]?.map { pair ->
+//                val polyAbove = polysByPoint[correspondingAbove]
+//                        ?.map { Pair(distance(it.first, pair.first), it.second) }
+//                        ?.filter { it.first < averageSideLength * 0.3 }
+//                        ?.sortedBy { it.first }
+//                        ?.map { it.second }
+//                        ?.takeLast(1)
+//
+//            }
+        }
 
         return gray
 
