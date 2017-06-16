@@ -190,7 +190,7 @@ class BoardRecognizer {
                 // Draw all polys in blue
                 .map {
                     contours.set(it.index, it.matOfPoint)
-                    Imgproc.drawContours(gray, contours, it.index, Scalar(0.0, 50.0, 255.0), 1)
+//                    Imgproc.drawContours(gray, contours, it.index, Scalar(0.0, 50.0, 255.0), 1)
                     it
                 }
                 .sortedBy { it.area() }
@@ -198,7 +198,7 @@ class BoardRecognizer {
         val bigPolygons = polygons.filter {
             it.area() > gray.size().area() / 1500.0
         }.map {
-            Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 1)
+//            Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 1)
             it
         }
 
@@ -206,21 +206,15 @@ class BoardRecognizer {
         val perfectPolygons = bigPolygons
                 .filter { Math.abs(it.area() - averagePolySize) < averagePolySize * 0.4 }
                 .map {
-                    Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 1)
+//                    Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 1)
                     it
                 }.map {
-                    val rect = Rect(it.matOfPoint.toArray().toList())
-                    if (rect.points.distinct().count() != 4) {
-                        drawLine(gray, it.matOfPoint.toArray().toList(), Scalar(50.0, 0.0, 255.0), 3)
-                    }
-                    rect
+                    Rect(it.matOfPoint.toArray().toList())
                 }
-//                .sortedBy { it.points[0].x + it.points[0].y }
-//                .take(5)
 
         val averageSideLength = Math.sqrt(averagePolySize)
 
-        val polysByPoint = perfectPolygons.fold(mapOf<Int, List<Pair<Point, Rect>>>(), { acc, poly ->
+        val polysByPoint: Map<Int, List<Pair<Point, Rect>>> = perfectPolygons.fold(mapOf<Int, List<Pair<Point, Rect>>>(), { acc, poly ->
             (0 until 4).fold(acc, { subacc, i: Int ->
                 subacc + Pair(i, acc.getOrDefault(i, listOf()) + Pair(poly.points[i], poly))
             })
@@ -246,11 +240,13 @@ class BoardRecognizer {
                 acc + Pair(line.last(), line)
             })
 
+
             val pointLines = sideLines.entries.fold(mapOf<Point, Point>(), { acc, line ->
                 acc + line.value.map { Pair(it, line.key) }
             })
 
             val mergedLines = sideLines.keys.fold(Pair(sideLines, pointLines), { (lines, pointLines), point ->
+
                 val line = lines[pointLines[point]]!!
                 val otherPoint = polysByPoint[direction]!!
                         .map { Pair(distance(it.first, point), it.first) }
@@ -259,7 +255,7 @@ class BoardRecognizer {
                         .map { it.second }
                         .takeLast(1)
                         .getOrNull(0)
-
+1
                 if (otherPoint != null) {
                     val otherLine = lines[pointLines[otherPoint]]!!
                     val newLines = lines - pointLines[otherPoint]!! + Pair(pointLines[point]!!, line + otherLine)
@@ -301,126 +297,10 @@ class BoardRecognizer {
                 val firstIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.first(), sortedLine.first() + perpen))!!
                 val lastIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.last(), sortedLine.last() + perpen))!!
                 drawLine(gray, listOf(firstIntersection, lastIntersection), color, 2)
-
             }
         }
 
         return gray
-
-        val biggestContours = polygons
-
-
-        // Pick the grid out of two polys that might be either the board outline, or the grid outline
-        // Get the smaller of the largest two polys if it's at least 90% of the area of the largest one,
-        // otherwise get the largest poly
-        val gridPoly = if (biggestContours.size == 2 && biggestContours[0].area() / biggestContours[1].area() > 0.9)
-            biggestContours[0] else biggestContours[1]
-        // Draw the outline of the grid
-        Imgproc.drawContours(gray, contours, gridPoly.index, Scalar(0.0, 0.0, 255.0), 2)
-
-        return gray
-
-        if (gridPoly.area() / gray.size().area() < 0.3) {
-            println("Did not find the board!")
-            return gray
-//            return originalComparer(gray, true)
-        }
-
-//        return gray
-
-        // Unwarp perspective
-        // Get mats representing the current perspective rectangle, and the goal square
-        val originalRect = sortedRectangle(gridPoly.matOfPoint.toList())
-        val originalMat = Converters.vector_Point2f_to_Mat(originalRect)
-        val originalDstSquare = maxSquare(boundingRect(originalRect))
-        val originalDstMat = Converters.vector_Point2f_to_Mat(originalDstSquare)
-
-
-        // Warp between src perspective rectangle and dst square
-        val perspectiveTransform = Imgproc.getPerspectiveTransform(originalMat, originalDstMat)
-        Imgproc.warpPerspective(preprocessed, preprocessed, perspectiveTransform, Size(originalDstSquare[3].x, originalDstSquare[3].x))
-
-        // Draw the spaces which might include stones
-        val gridSize = preprocessed.width() / 18.0
-        // Convert to color for drawing colored polygons
-        Imgproc.cvtColor(preprocessed, preprocessed, Imgproc.COLOR_GRAY2RGB)
-        for (x in 0..19) {
-            for (y in  0..19) {
-                val center = Point(x * gridSize, y * gridSize)
-                val topLeft = Point(x * gridSize - gridSize / 2, y * gridSize - gridSize / 2)
-
-                if (x in 0..18 && y in 0..18) {
-                    val interestRadius = gridSize * 0.9 / 2
-
-                    // Fill area around interest circle with gray
-                    val fullRectangle = Rect(
-                            Point(topLeft.x, topLeft.y),
-                            Point(topLeft.x + gridSize, topLeft.y + gridSize))
-                    val fullMask = Mat(preprocessed.size(), CvType.CV_8U, Scalar(255.0, 255.0, 255.0))
-                    Core.rectangle(fullMask, fullRectangle.tl(), fullRectangle.br(), Scalar(0.0, 0.0, 0.0), -1)
-                    Core.circle(fullMask, center, (interestRadius).toInt(), Scalar(255.0, 255.0, 255.0), -1)
-                    Core.bitwise_not(fullMask, fullMask)
-                    val grayMat = Mat(preprocessed.size(), CvType.CV_8U, Scalar(127.0, 127.0, 127.0))
-                    Imgproc.cvtColor(grayMat, grayMat, Imgproc.COLOR_GRAY2RGB) // TODO: Might exist a better way
-                    grayMat.copyTo(preprocessed, fullMask)
-
-                    // Create a material over the interest area
-                    val interestRectangle = Rect(
-                            Point(Math.round(Math.max(center.x - interestRadius, 0.0)).toDouble(),
-                                    Math.round(Math.max(center.y - interestRadius, 0.0)).toDouble()),
-                            Point(Math.round(Math.min(center.x + interestRadius, preprocessed.width().toDouble())).toDouble(),
-                                    Math.round(Math.min(center.y + interestRadius, preprocessed.height().toDouble())).toDouble()))
-                    val interestMat = Mat(preprocessed, interestRectangle)
-
-                    // Calculate histogram
-                    val hist = Mat()
-                    val fullNumberOfBins = 23
-                    Imgproc.calcHist(Arrays.asList(interestMat), MatOfInt(0),
-                            Mat(), hist, MatOfInt(fullNumberOfBins), MatOfFloat(0.0f, 255.0f))
-                    val histogramBins = (0 until fullNumberOfBins)
-                            .filterNot { it == fullNumberOfBins / 2 } // Remove center bin because of grayness
-                            .map {
-                        hist.get(it, 0)[0]
-                    }
-                    val numberOfBins = histogramBins.size
-
-                    // Draw histogram
-                    val maxBin = histogramBins.max()!!
-                    histogramBins.mapIndexed { index, value ->
-                        val barHeight = gridSize * (value / maxBin)
-                        val barX = (gridSize / (numberOfBins + 1)) * index
-                        val width = gridSize / ((numberOfBins + 1) * 2)
-
-                        Core.rectangle(preprocessed,
-                                Point(topLeft.x + barX + width, topLeft.y + gridSize - barHeight),
-                                Point(topLeft.x + barX + width * 2, topLeft.y + gridSize),
-                                Scalar(180.0 + (index % 2 * 60), 0.0, 0.0),
-                                -1
-                        )
-                    }
-
-                    // Draw guess
-                    val sum = histogramBins.sum()
-
-                    val threshold = 0.5
-                    if (histogramBins.first() > histogramBins.last()) { // Black
-                        if ((histogramBins[0] + histogramBins[1] + histogramBins[2] + histogramBins[3] + histogramBins[4]) / sum > threshold) {
-                            Core.rectangle(preprocessed, Point(fullRectangle.x+1.0, fullRectangle.y+1.0), Point(fullRectangle.br().x-1, fullRectangle.br().y-1),
-                                    Scalar(0.0, 0.0, 0.0)
-                            )
-                        }
-                    } else { // White
-                        if (histogramBins[numberOfBins-1] / sum > threshold) {
-                            Core.rectangle(preprocessed, Point(fullRectangle.x+1.0, fullRectangle.y+1.0), Point(fullRectangle.br().x-1, fullRectangle.br().y-1),
-                                    Scalar(255.0, 255.0, 255.0)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        return preprocessed
     }
 
     fun filterMiddleColor(mat: Mat, numberOfBins: Int = 60) {
@@ -589,28 +469,11 @@ class BoardRecognizer {
         val sr = SimpleRegression()
         line.forEach { sr.addData(it.x, it.y) }
         return Point(1.0, sr.slope)
-
-        val p1 = Point(line.map { it.x }.average(), line.map { it.y }.average())
-        
-//        var xp1.x = 0.0
-//        var yp1.y = 0.0
-//        var xp1.y = 0.0
-        val x = line.map { (it.x - p1.x) * (it.x - p1.x) }.sum()
-//        val y = line.map { (it.y - p1.y) * (it.y - p1.y) }.sum()
-        val xy = line.map { (it.x - p1.x) * (it.y - p1.y) }.sum()
-        val beta1 = xy / x
-        val beta0 = p1.y - beta1 * p1.x
-        
-        return Point(beta0, beta1)
     }
 
     fun perpendicularLine(line: Point): Point {
         val slope = -1 / (line.y / line.x)
-//        val angle = Math.atan2(line.y, line.x)
-//        val distance = 20
-//        val x = Math.sin(angle) * distance
-//        val y = Math.cos(angle) * distance
-        return Point(1.0, slope)
+        return if(slope.isFinite()) Point(1.0, slope) else Point(0.0, 1.0)
     }
 
     fun drawLine(mat: Mat, line: List<Point>, color: Scalar, width: Int) {
