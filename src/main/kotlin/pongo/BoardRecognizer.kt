@@ -194,7 +194,7 @@ class BoardRecognizer {
         val bigPolygons = polygons.filter {
             it.area() > gray.size().area() / 1500.0
         }.map {
-            Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 2)
+            Imgproc.drawContours(gray, contours, it.index, Scalar(255.0, 50.0, 50.0), 1)
             it
         }
 
@@ -202,7 +202,7 @@ class BoardRecognizer {
         val perfectPolygons = bigPolygons
                 .filter { Math.abs(it.area() - averagePolySize) < averagePolySize * 0.4 }
                 .map {
-                    Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 2)
+                    Imgproc.drawContours(gray, contours, it.index, Scalar(50.0, 255.0, 50.0), 1)
                     it
                 }.map { Rect(it.matOfPoint.toArray().toList()) }
 //                .sortedBy { it.points[0].x + it.points[0].y }
@@ -216,38 +216,72 @@ class BoardRecognizer {
             })
         })
 
-        val verticalLines = (0..1).map {
-            val correspondingAbove = if (it == 0) 3 else 2
-            val lines = perfectPolygons.fold(mapOf<Point, List<Point>>(), { acc, poly ->
-                val line = if (it == 0) listOf(poly.points[3], poly.points[0]) else listOf(poly.points[2], poly.points[1])
+        val lines = (0 until 4).fold(mapOf<Int,List<List<Point>>>(), { outerAcc: Map<Int,List<List<Point>>>, side: Int ->
+            val direction = when(side) {
+                0 -> 3
+                1 -> 2
+                2 -> 0
+                3 -> 3
+                else -> throw IllegalArgumentException("Invalid value: " + side)
+            }
+            val sideLines = perfectPolygons.fold(mapOf<Point, List<Point>>(), { acc, poly ->
+                val line = when(side) {
+                    0 -> listOf(poly.points[3], poly.points[0])
+                    1 -> listOf(poly.points[2], poly.points[1])
+                    2 -> listOf(poly.points[0], poly.points[1])
+                    3 -> listOf(poly.points[3], poly.points[2])
+                    else -> throw IllegalArgumentException("Invalid value: " + side)
+                }
+
                 acc + Pair(line.last(), line)
             })
 
-            val pointLines = lines.entries.fold(mapOf<Point, Point>(), { acc, line ->
+            val pointLines = sideLines.entries.fold(mapOf<Point, Point>(), { acc, line ->
                 acc + line.value.map { Pair(it, line.key) }
             })
 
-            lines.keys.fold(Pair(lines, pointLines), { (lines, pointLines), point ->
+            val mergedLines = sideLines.keys.fold(Pair(sideLines, pointLines), { (lines, pointLines), point ->
                 val line = lines[pointLines[point]]!!
-                val otherPoint = polysByPoint[correspondingAbove]!!
+                val otherPoint = polysByPoint[direction]!!
                         .map { Pair(distance(it.first, point), it.first) }
                         .filter { it.first < averageSideLength * 0.4 }
                         .sortedBy { it.first }
                         .map { it.second }
                         .takeLast(1)
                         .getOrNull(0)
+
                 if (otherPoint != null) {
                     val otherLine = lines[pointLines[otherPoint]]!!
-                    val newLines = lines - pointLines[otherPoint]!! + Pair(point, line + otherLine)
+                    val newLines = lines - pointLines[otherPoint]!! + Pair(pointLines[point]!!, line + otherLine)
                     val newPointLines = pointLines + otherLine.map { Pair(it, pointLines[point]!!) }
+
+                    // Detect duplicates
+                    lines.entries
+                            .map { entry ->
+                                entry.value.map {
+                                    Pair(entry.key, it) } }
+                            .flatMap { it }
+                            .groupBy { it.second }.entries
+                            .filter { it.value.size > 1 }
+                            .map {
+                                println("Double! ${it}")
+                                assert(false)
+                            }
+
                     Pair(newLines, newPointLines)
                 } else {
                     Pair(lines, pointLines)
                 }
-            }).first.map { line ->
+            })
+
+            outerAcc + Pair(side, mergedLines.first.values.toList())
+        })
+
+        lines.values.flatMap { lines ->
+            lines.map { line ->
                 val color = Scalar(Math.random() * 255, Math.random() * 255, Math.random() * 255.0)
-                line.value
-                        .sortedBy { distance(it, line.value.first()) }
+                line
+                        .sortedBy { distance(it, line.first()) }
                         .reduce({ first, second ->
                             Core.line(gray, first, second, color, 2)
                             second
