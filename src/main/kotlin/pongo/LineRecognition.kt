@@ -14,13 +14,16 @@ fun findLines(quads: List<Contour>): Map<Int, List<List<Point>>> {
     val averageArea = quads.map { it.area() }.average()
     val averageSideLength = Math.sqrt(averageArea)
 
+    // Rects close to the average size
     val rects = getRects(quads, averageArea, diffFactor = 0.4)
+
+    // Map from side-id to list of Pair<Point, Rect>
     val polysByPoint: Map<Int, List<Pair<Point, Rect>>> = getRectsBySide(rects)
 
-    val lines = (0 until 4)
+    // Map of side-id to list of lines
+    val lines: Map<Int, List<List<Point>>> = (0 until 4)
             .fold(mapOf<Int, List<List<Point>>>(), { acc: Map<Int, List<List<Point>>>, side: Int ->
-                // Map from side-id to list of Pair<Point, Rect>
-                val linesForSide = getLinesForSide(side, rects, polysByPoint, averageSideLength)
+                val linesForSide: List<List<Point>> = getLinesForSide(side, rects, polysByPoint, averageSideLength)
                 acc + Pair(side, linesForSide)
             })
     return lines
@@ -30,14 +33,19 @@ private fun getStraightLine(line: List<Point>): List<Point> {
     val sortedLine = line
             .sortedBy { distance(it, line.first()) }
 
-    val regression = linearRegression(sortedLine)
-    val firstToLast = linearRegression(listOf(sortedLine.first(), sortedLine.last()))
+    val regression: Point = linearRegression(sortedLine)
+    val firstToLast: Point = linearRegression(listOf(sortedLine.first(), sortedLine.last()))
 
-    val perpen = perpendicularLine(firstToLast)
+    val perpenLine: Point = perpendicularLine(firstToLast)
 
     val lineCenter = Point(sortedLine.map { it.x }.average(), sortedLine.map { it.y }.average())
-    val firstIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.first(), sortedLine.first() + perpen))!!
-    val lastIntersection = intersection(Line(lineCenter, lineCenter + regression), Line(sortedLine.last(), sortedLine.last() + perpen))!!
+
+    val firstIntersection = intersection(
+            Line(lineCenter, lineCenter + regression),
+            Line(sortedLine.first(), sortedLine.first() + perpenLine))!!
+    val lastIntersection = intersection(
+            Line(lineCenter, lineCenter + regression),
+            Line(sortedLine.last(), sortedLine.last() + perpenLine))!!
     return listOf(firstIntersection, lastIntersection)
 }
 
@@ -47,7 +55,7 @@ private fun getLinesForSide(side: Int,
                             rects: List<Rect>,
                             polysByPoint: Map<Int, List<Pair<Point, Rect>>>,
                             averageSideLength: Double): List<List<Point>> {
-    val corner = getCorrespondingCorner(side)
+    val corner: Int = getCorrespondingCorner(side)
 
     val sideLines: Map<Point, List<Point>> = getSideLines(rects, side)
 
@@ -65,8 +73,8 @@ private fun connectCloseLines(
         pointLines: Map<Point, Point>,
         point: Point, polysByPoint: Map<Int, List<Pair<Point, Rect>>>,
         corner: Int, averageSideLength: Double): Pair<Map<Point, List<Point>>, Map<Point, Point>> {
-    val line = lines[pointLines[point]]!!
-    val otherPoint = findClosestPoint(polysByPoint, corner, point, averageSideLength)
+    val line: List<Point> = lines[pointLines[point]]!!
+    val otherPoint: Point? = findClosestPoint(polysByPoint, corner, point, averageSideLength)
 
     return if (otherPoint != null) {
         connectLines(lines, pointLines, otherPoint, point, line)
@@ -75,14 +83,22 @@ private fun connectCloseLines(
     }
 }
 
-private fun connectLines(lines: Map<Point, List<Point>>, pointLines: Map<Point, Point>, otherPoint: Point, point: Point, line: List<Point>): Pair<Map<Point, List<Point>>, Map<Point, Point>> {
-    val otherLine = lines[pointLines[otherPoint]]!!
-    val newLines = lines - pointLines[otherPoint]!! + Pair(pointLines[point]!!, line + otherLine)
-    val newPointLines = pointLines + otherLine.map { Pair(it, pointLines[point]!!) }
+private fun connectLines(lines: Map<Point, List<Point>>,
+                         pointLines: Map<Point, Point>,
+                         otherPoint: Point,
+                         point: Point,
+                         line: List<Point>): Pair<Map<Point, List<Point>>, Map<Point, Point>> {
+    val otherLine: List<Point> = lines[pointLines[otherPoint]]!!
+    val newLines: Map<Point, List<Point>> = lines - pointLines[otherPoint]!! +
+            Pair(pointLines[point]!!, line + otherLine)
+    val newPointLines: Map<Point, Point> = pointLines + otherLine.map { Pair(it, pointLines[point]!!) }
     return Pair(newLines, newPointLines)
 }
 
-private fun findClosestPoint(polysByPoint: Map<Int, List<Pair<Point, Rect>>>, corner: Int, point: Point, averageSideLength: Double): Point? {
+private fun findClosestPoint(polysByPoint: Map<Int, List<Pair<Point, Rect>>>,
+                             corner: Int,
+                             point: Point,
+                             averageSideLength: Double): Point? {
     return polysByPoint[corner]!!
             .map { Pair(distance(it.first, point), it.first) }
             .filter { it.first < averageSideLength * 0.4 }
@@ -133,8 +149,8 @@ private fun getRects(quads: List<Contour>, averageArea: Double, diffFactor: Doub
             }
 }
 
-private fun getRectsBySide(perfectRects: List<Rect>): Map<Int, List<Pair<Point, Rect>>> {
-    return perfectRects.fold(mapOf<Int, List<Pair<Point, Rect>>>(), { acc, poly ->
+private fun getRectsBySide(rects: List<Rect>): Map<Int, List<Pair<Point, Rect>>> {
+    return rects.fold(mapOf<Int, List<Pair<Point, Rect>>>(), { acc, poly ->
         (0 until 4).fold(acc, { subacc, i: Int ->
             subacc + Pair(i, acc.getOrDefault(i, listOf()) + Pair(poly.points[i], poly))
         })

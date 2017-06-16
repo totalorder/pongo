@@ -48,7 +48,8 @@ fun filterMiddleColor(mat: Mat, numberOfBins: Int = 60): Mat {
     val distanceThreshold = 0.5
     val spanThreshold = 3.5
     val selectedBins = allBins
-            .filter { it.index > numberOfBins / spanThreshold && it.index < numberOfBins - numberOfBins / spanThreshold }
+            .filter { it.index > numberOfBins / spanThreshold &&
+                    it.index < numberOfBins - numberOfBins / spanThreshold }
     val maxSelectedBin = selectedBins.reduce({left, right -> if (left.value > right.value) left else right})
     val maxBin = allBins.map { it.value }.max()!!
     for (binIndex in (selectedBins[0].index..maxSelectedBin.index).reversed()) {
